@@ -7,6 +7,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = self
+        Task { @MainActor in AppActions.shared.applyAppearanceOnLaunch() }
     }
 
     /// Finder 双击已注册的归档类型时由 LaunchServices 投递。

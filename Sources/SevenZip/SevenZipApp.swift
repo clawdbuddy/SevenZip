@@ -3,13 +3,12 @@ import SwiftUI
 @main
 struct SevenZipApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var archiveModel = ArchiveModel()
     @StateObject private var actions = AppActions.shared
 
     var body: some Scene {
         WindowGroup {
+            // 每个 PaneView 自带 ArchiveModel（双窗格各自浏览不同归档）。
             ContentView()
-                .environmentObject(archiveModel)
                 .environmentObject(actions)
                 .frame(minWidth: 940, minHeight: 560)
         }
@@ -44,7 +43,25 @@ struct SevenZipApp: App {
                     .keyboardShortcut("r")
                 Button("返回上级目录") { actions.goUp() }
                     .keyboardShortcut(.upArrow, modifiers: .command)
+                Divider()
                 Toggle("平铺视图", isOn: $actions.flatView)
+                Picker("视图", selection: $actions.viewMode) {
+                    ForEach(AppActions.ViewMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                Divider()
+                Button("双窗格") { actions.toggleDualPane() }   // F9（菜单快捷键不支持 F 键，事件监听补齐）
+                Button("切换窗格") { actions.switchPane() }
+                    .keyboardShortcut(.tab, modifiers: [])
+                Button("复制到另一窗格") { actions.copyToOtherPane() }     // F5
+                Button("移动到另一窗格") { actions.moveToOtherPane() }   // F6
+                Divider()
+                Picker("外观", selection: $actions.appearance) {
+                    ForEach(AppActions.Appearance.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
                 Divider()
                 Button("运行日志") { actions.toggleLog() }
                     .keyboardShortcut("l")

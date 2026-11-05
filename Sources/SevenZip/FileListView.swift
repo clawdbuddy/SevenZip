@@ -37,6 +37,8 @@ struct FileListView: NSViewRepresentable {
     let menuProvider: (FileListRow?) -> [FileListMenuAction]
     /// 点击表头排序时回调（空数组 = 恢复默认顺序）。
     var onSortChange: ([NSSortDescriptor]) -> Void = { _ in }
+    /// 用户与列表发生交互（点击/选择/双击）时回调，双窗格模式下用于切换焦点。
+    var onInteraction: () -> Void = {}
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -167,6 +169,7 @@ struct FileListView: NSViewRepresentable {
 
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard let table else { return }
+            parent.onInteraction()
             let selected = table.selectedRowIndexes
                 .filter { $0 < parent.rows.count }
                 .map { parent.rows[$0].id }

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Bridge between the macOS menu bar (owned by the App) and ContentView.
@@ -28,9 +29,64 @@ final class AppActions: ObservableObject {
     var fileAssociation: () -> Void = {}
     var about: () -> Void = {}
 
+    // 双窗格（阶段2）：外壳安装开关，焦点窗格安装跨窗格传输。
+    var toggleDualPane: () -> Void = {}
+    var switchPane: () -> Void = {}
+    var copyToOtherPane: () -> Void = {}
+    var moveToOtherPane: () -> Void = {}
+    /// 由非焦点窗格安装：返回其磁盘目录（在归档内则为 nil）。
+    var otherPaneDiskLocation: () -> URL? = { nil }
+    /// 由非焦点窗格安装：接收另一窗格复制过来的本地文件（加入其归档）。
+    var receiveFilesFromOtherPane: ([URL]) -> Void = { _ in }
+
+    /// 文件列表视图模式：详细资料（表格）/ 大图标（网格）。
+    enum ViewMode: String, CaseIterable, Identifiable {
+        case list, icons
+        var id: String { rawValue }
+        var title: String { self == .list ? "详细资料" : "大图标" }
+    }
+
+    @Published var viewMode: ViewMode = ViewMode(
+        rawValue: UserDefaults.standard.string(forKey: "viewMode") ?? "") ?? .list {
+        didSet { UserDefaults.standard.set(viewMode.rawValue, forKey: "viewMode") }
+    }
+
     /// 平铺视图（归档内不折叠目录，显示全部条目）。菜单开关与列表共用此状态。
     @Published var flatView = UserDefaults.standard.bool(forKey: "flatView") {
         didSet { UserDefaults.standard.set(flatView, forKey: "flatView") }
+    }
+
+    /// 外观主题：system / light / dark，作用于整个 app 的 NSApp.appearance。
+    enum Appearance: String, CaseIterable, Identifiable {
+        case system, light, dark
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .system: return "跟随系统"
+            case .light: return "浅色"
+            case .dark: return "深色"
+            }
+        }
+        var nsAppearance: NSAppearance? {
+            switch self {
+            case .system: return nil
+            case .light: return NSAppearance(named: .aqua)
+            case .dark: return NSAppearance(named: .darkAqua)
+            }
+        }
+    }
+
+    @Published var appearance: Appearance = Appearance(
+        rawValue: UserDefaults.standard.string(forKey: "appearance") ?? "") ?? .system {
+        didSet {
+            UserDefaults.standard.set(appearance.rawValue, forKey: "appearance")
+            NSApp.appearance = appearance.nsAppearance
+        }
+    }
+
+    /// App 启动时恢复上次的外观设置（didSet 不会在初始化时触发）。
+    func applyAppearanceOnLaunch() {
+        NSApp.appearance = appearance.nsAppearance
     }
 
     // Finder 集成：由 AppDelegate 转发，ContentView 安装实现。
