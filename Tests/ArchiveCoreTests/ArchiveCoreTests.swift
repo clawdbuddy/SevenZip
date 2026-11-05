@@ -65,9 +65,9 @@ extension ArchiveCoreTests {
     /// GBK 字节经 7-Zip 的 PUA 映射后，应还原为原始中文名。
     func testLegacyZipNameRecoveryGBK() {
         // "中文文件.txt" 的 GBK 字节流：D6D0 CEC4 CEC4 BCFE。
-        // 引擎行为：恰好构成合法 UTF-8 的字节对原样透传（CE C4 → Ą，出现两次），
-        // 其余非 ASCII 字节映射到 U+EF00+byte（D6、D0、BC、FE）。
-        let engineName = "\u{EFD6}\u{EFD0}ĄĄ\u{EFBC}\u{FEFE}.txt"
+        // 引擎行为：C4 是 UTF-8 前导字节而非延续字节，故 CE C4 不是合法 UTF-8，
+        // 全部 8 个非 ASCII 字节都映射到 U+EF00+byte（D6→EFD6 … FE→EFFE）。
+        let engineName = "\u{EFD6}\u{EFD0}\u{EFCE}\u{EFC4}\u{EFCE}\u{EFC4}\u{EFBC}\u{EFFE}.txt"
         XCTAssertEqual(LegacyZipName.recover(engineName), "中文文件.txt")
     }
 
