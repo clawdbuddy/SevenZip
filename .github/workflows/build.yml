@@ -1,0 +1,46 @@
+name: build-macos
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15   # Apple Silicon runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境检查
+        run: |
+          uname -m
+          xcodebuild -version
+          swift --version
+
+      - name: 构建 7zz 引擎 + SwiftUI 应用 + ZIP/DMG
+        run: bash scripts/build-macos.sh
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: SevenZip-macOS-arm64
+          path: |
+            dist/SevenZip-macOS-arm64.zip
+            dist/SevenZip-macOS-arm64.dmg
+          retention-days: 14
+
+      - name: 发布 Release（仅 v* 标签）
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${GITHUB_REF_NAME}"
+          dist/SevenZip-macOS-arm64.zip
+          dist/SevenZip-macOS-arm64.dmg
+          --title "七压 SevenZip ${GITHUB_REF_NAME}"
+          --generate-notes

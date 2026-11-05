@@ -3,6 +3,7 @@
 **基于 7-Zip 26.05 官方引擎的原生 macOS 图形界面**（Apple Silicon · SwiftUI)
 
 [![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](LICENSE)
+[![build](https://github.com/clawdbuddy/SevenZip/actions/workflows/build.yml/badge.svg)](https://github.com/clawdbuddy/SevenZip/actions/workflows/build.yml)
 ![Platform](https://img.shields.io/badge/platform-macOS%2013%2B%20%7C%20Apple%20Silicon-lightgrey)
 ![Engine](https://img.shields.io/badge/engine-7--Zip%2026.05-green)
 
