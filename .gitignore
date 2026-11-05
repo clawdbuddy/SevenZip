@@ -1,0 +1,9 @@
+# 构建产物
+.build/
+.build-7zip/
+dist/
+
+# macOS
+.DS_Store
+*.previous.*
+.claude/

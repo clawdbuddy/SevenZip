@@ -1,0 +1,221 @@
+import AppKit
+import SwiftUI
+
+enum FileListRowKind: Hashable { case up, folder, file }
+
+struct FileListRow: Identifiable, Hashable {
+    let id: String           // local: file path; archive: entry.path; up: sentinel ".."
+    let kind: FileListRowKind
+    let name: String
+    let sizeText: String
+    let packedText: String
+    let modified: String
+    let isArchiveFile: Bool
+}
+
+struct FileListMenuAction {
+    let title: String
+    var destructive = false
+    var enabled = true
+    var isSeparator = false
+    var action: () -> Void = {}
+
+    static func separator() -> FileListMenuAction { FileListMenuAction(title: "", isSeparator: true) }
+}
+
+/// NSTableView-backed file list: SwiftUI's `Table` cannot reliably deliver
+/// double-click activation or right-click context menus on macOS, both of
+/// which are core to the 7-Zip File Manager interaction model.
+struct FileListView: NSViewRepresentable {
+    let rows: [FileListRow]
+    @Binding var selection: Set<String>
+    let onActivate: (FileListRow) -> Void
+    let menuProvider: (FileListRow?) -> [FileListMenuAction]
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let table = NSTableView()
+        table.headerView = NSTableHeaderView()
+        // Automatic row heights measure our constraint-built cells as ~2pt,
+        // rendering every row invisible. A fixed row height is both correct
+        // and faithful to 7zFM's compact list.
+        table.usesAutomaticRowHeights = false
+        table.rowHeight = 22
+        table.intercellSpacing = NSSize(width: 12, height: 2)
+        table.allowsMultipleSelection = true
+        table.allowsEmptySelection = true
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+
+        let columns: [(String, String, CGFloat)] = [
+            ("name", "名称", 340),
+            ("size", "大小", 100),
+            ("packed", "压缩后", 100),
+            ("modified", "修改时间", 150),
+        ]
+        for (identifier, title, width) in columns {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
+            column.title = title
+            column.width = width
+            column.minWidth = 60
+            table.addTableColumn(column)
+        }
+
+        table.dataSource = context.coordinator
+        table.delegate = context.coordinator
+        table.target = context.coordinator
+        table.doubleAction = #selector(Coordinator.doubleClick(_:))
+
+        let scroll = NSScrollView()
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        context.coordinator.table = table
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let table = context.coordinator.table else { return }
+        table.reloadData()
+        let indexes = rows.indices.filter { selection.contains(rows[$0].id) }
+        table.selectRowIndexes(IndexSet(indexes), byExtendingSelection: false)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+        var parent: FileListView
+        weak var table: NSTableView?
+
+        init(_ parent: FileListView) { self.parent = parent }
+
+        func numberOfRows(in tableView: NSTableView) -> Int { parent.rows.count }
+
+        func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?,
+                       row: Int) -> NSView? {
+            guard let column, row < parent.rows.count else { return nil }
+            let item = parent.rows[row]
+            let identifier = NSUserInterfaceItemIdentifier("cell-\(column.identifier.rawValue)")
+            let cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? NSTableCellView
+                ?? makeCell(identifier: identifier)
+            switch column.identifier.rawValue {
+            case "name":
+                cell.textField?.stringValue = item.name
+                cell.imageView?.image = NSImage(systemSymbolName: iconName(item),
+                                                accessibilityDescription: nil)
+                cell.imageView?.contentTintColor = iconColor(item)
+                cell.imageView?.isHidden = false
+            case "size":
+                cell.textField?.stringValue = item.sizeText
+                cell.imageView?.isHidden = true
+            case "packed":
+                cell.textField?.stringValue = item.packedText
+                cell.imageView?.isHidden = true
+            default:
+                cell.textField?.stringValue = item.modified
+                cell.imageView?.isHidden = true
+            }
+            return cell
+        }
+
+        private func makeCell(identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {
+            let cell = NSTableCellView()
+            cell.identifier = identifier
+            let image = NSImageView()
+            image.translatesAutoresizingMaskIntoConstraints = false
+            let text = NSTextField(labelWithString: "")
+            text.translatesAutoresizingMaskIntoConstraints = false
+            text.lineBreakMode = .byTruncatingMiddle
+            cell.addSubview(image)
+            cell.addSubview(text)
+            cell.imageView = image
+            cell.textField = text
+            NSLayoutConstraint.activate([
+                image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+                image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                image.widthAnchor.constraint(equalToConstant: 16),
+                image.heightAnchor.constraint(equalToConstant: 16),
+                text.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 6),
+                text.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -2),
+                text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            return cell
+        }
+
+        private func iconName(_ row: FileListRow) -> String {
+            switch row.kind {
+            case .up: return "arrow.turn.left.up"
+            case .folder: return "folder"
+            case .file: return row.isArchiveFile ? "doc.zipper" : "doc"
+            }
+        }
+
+        private func iconColor(_ row: FileListRow) -> NSColor {
+            switch row.kind {
+            case .up: return .secondaryLabelColor
+            case .folder: return .systemBrown
+            case .file: return row.isArchiveFile ? .controlAccentColor : .secondaryLabelColor
+            }
+        }
+
+        func tableViewSelectionDidChange(_ notification: Notification) {
+            guard let table else { return }
+            let selected = table.selectedRowIndexes
+                .filter { $0 < parent.rows.count }
+                .map { parent.rows[$0].id }
+            let newSelection = Set(selected)
+            if newSelection != parent.selection { parent.selection = newSelection }
+        }
+
+        @objc func doubleClick(_ sender: NSTableView) {
+            let row = sender.clickedRow
+            guard row >= 0, row < parent.rows.count else { return }
+            parent.onActivate(parent.rows[row])
+        }
+
+        // MARK: Context menu
+
+        func tableView(_ tableView: NSTableView, menuFor event: NSEvent) -> NSMenu? {
+            let point = tableView.convert(event.locationInWindow, from: nil)
+            let row = tableView.row(at: point)
+            var target: FileListRow?
+            if row >= 0, row < parent.rows.count {
+                let item = parent.rows[row]
+                target = item
+                // Right-clicking an unselected row moves the selection to it,
+                // matching Finder and 7zFM behavior.
+                if item.kind != .up, !parent.selection.contains(item.id) {
+                    parent.selection = [item.id]
+                    tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                }
+            }
+            let actions = parent.menuProvider(target)
+            guard !actions.isEmpty else { return nil }
+            let menu = NSMenu()
+            for spec in actions {
+                if spec.isSeparator {
+                    menu.addItem(.separator())
+                    continue
+                }
+                let menuItem = NSMenuItem(title: spec.title, action: #selector(runMenuAction(_:)),
+                                          keyEquivalent: "")
+                menuItem.target = self
+                menuItem.isEnabled = spec.enabled
+                menuItem.representedObject = Box(spec.action)
+                if spec.destructive { menuItem.attributedTitle = nil }
+                menu.addItem(menuItem)
+            }
+            return menu
+        }
+
+        /// NSMenuItem.representedObject requires an NSObject; box the closure.
+        final class Box: NSObject {
+            let action: () -> Void
+            init(_ action: @escaping () -> Void) { self.action = action }
+        }
+
+        @objc private func runMenuAction(_ sender: NSMenuItem) {
+            (sender.representedObject as? Box)?.action()
+        }
+    }
+}
