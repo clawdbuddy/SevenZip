@@ -11,9 +11,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Finder 双击已注册的归档类型时由 LaunchServices 投递。
+    /// 同时接收 Finder Sync 扩展回传的 sevenzip://<extract|compress>?path=… 命令。
     func application(_ application: NSApplication, open urls: [URL]) {
         NSApp.activate(ignoringOtherApps: true)
-        Task { @MainActor in AppActions.shared.routeOpenFiles(urls) }
+        Task { @MainActor in
+            let fileURLs = urls.filter { $0.isFileURL }
+            if !fileURLs.isEmpty { AppActions.shared.routeOpenFiles(fileURLs) }
+            for url in urls where url.scheme == "sevenzip" {
+                guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { continue }
+                let files = (components.queryItems ?? [])
+                    .filter { $0.name == "path" }
+                    .compactMap(\.value)
+                    .map { URL(fileURLWithPath: $0) }
+                guard !files.isEmpty else { continue }
+                switch url.host {
+                case "extract": AppActions.shared.routeExtractInPlace(files)
+                case "compress": AppActions.shared.routeCompressInPlace(files)
+                default: AppActions.shared.routeOpenFiles(files)
+                }
+            }
+        }
     }
 
     @objc func serviceOpenArchives(_ pboard: NSPasteboard, userData: String?,

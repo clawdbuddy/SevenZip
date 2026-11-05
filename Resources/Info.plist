@@ -15,6 +15,14 @@
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+      <dict>
+        <key>CFBundleURLName</key><string>org.sevenzip.app.commands</string>
+        <key>CFBundleURLSchemes</key>
+        <array><string>sevenzip</string></array>
+      </dict>
+    </array>
     <key>UTImportedTypeDeclarations</key>
     <array>
       <dict>

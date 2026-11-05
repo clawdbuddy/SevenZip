@@ -11,12 +11,16 @@
 
 ## 功能特性
 
-- **7zFM 交互范式**：菜单栏 + 大图标工具栏 + 地址栏 + 单窗格文件列表 + 状态栏，压缩包像文件夹一样双击进入，`..` 返回上级，支持右键上下文菜单
+- **7zFM 交互范式**：菜单栏 + 大图标工具栏 + 地址栏 + 文件列表 + 状态栏，压缩包像文件夹一样双击进入，`..` 返回上级，支持右键上下文菜单
+- **双窗格（F9）**：左右两个独立浏览窗格，Tab 或点击切换焦点，F5/F6 跨窗格复制/移动（磁盘 ⇄ 归档双向）
+- **列排序与视图模式**：名称/大小/压缩后/修改时间点击表头排序；详细资料 / 大图标两种视图；归档内平铺视图（不折叠目录）
+- **嵌套归档**：压缩包里的压缩包双击直接进入（临时解压、只读），`..` 逐层退出，地址栏显示 `outer.zip\inner.7z\`
 - **全格式支持**：7z / ZIP / RAR / TAR / GZ / XZ 的浏览、解压、测试；7z / ZIP / TAR 的创建与修改（添加、删除、重命名条目）
 - **旧编码 ZIP 中文乱码修复**：自动识别 GBK/GB18030 编码的旧式 ZIP（Windows 中文环境打包）,PUA 映射无损恢复文件名，列表、选择性解压、落地重命名全链路生效
 - **加密归档**：7z 文件名加密、ZIP AES-256；密码经 stdin 管道传递，不出现在命令行参数、环境变量或日志中；列表失败后自动弹出密码重试
-- **Finder 深度集成**:右键 → 服务菜单（用七压打开 / 解压到当前目录 / 压缩所选项目）；应用内「工具 → 文件类型关联」复选框面板，可绑定/移除各格式的默认打开方式
-- **专业选项**：压缩级别、CPU 线程、分卷、macOS 元数据排除；批量压缩/解压队列、格式转换、SHA-256 校验、Quick Look 内容预览
+- **Finder 深度集成**:右键一级菜单（Finder Sync 扩展：用七压打开 / 解压到当前目录 / 压缩所选项目）+ 服务菜单；应用内「工具 → 文件类型关联」复选框面板，可绑定/移除各格式的默认打开方式
+- **Quick Look 空格预览**：选中压缩包按空格即显示内容清单（名称/大小/压缩后/修改时间，含 GBK 乱码恢复）
+- **专业选项**：压缩级别、CPU 线程、分卷、macOS 元数据排除；批量压缩/解压队列、格式转换、多算法校验和（CRC32/CRC64/SHA-1/SHA-256/SHA-512/BLAKE2sp）；浅色/深色/跟随系统外观
 - **命令行**：应用内附 `SevenZipCLI`，与 GUI 共用同一套命令构造逻辑，适合脚本自动化
 
 ## 系统要求
@@ -62,6 +66,12 @@ NOTARY_PROFILE="my-notary-profile" bash scripts/build-macos.sh
 
 快捷键可在 `系统设置 → 键盘 → 键盘快捷键 → 服务` 中配置。服务若不显示，注销重登一次即可。
 
+**Finder 右键一级菜单（Finder Sync 扩展）**：首次安装后需在 `系统设置 → 隐私与安全性 → 扩展 → Finder` 中勾选「SevenZip Finder」（macOS 强制手动启用）。之后在 Finder 任意位置右键文件/文件夹，即可在「七压 SevenZip」子菜单中直接 打开 / 解压到当前目录 / 压缩所选项目。
+
+**Quick Look 空格预览**：选中压缩包按空格即可查看内容清单，无需打开应用（首次使用若未生效，运行一次主程序或注销重登）。
+
+**双窗格与快捷键**：`F9` 开关双窗格，`Tab` 切换焦点窗格，`F5`/`F6` 跨窗格复制/移动，`⌘R` 刷新，`⌘↑` 返回上级，`⌘L` 运行日志。
+
 **命令行**:
 
 ```bash
@@ -75,10 +85,13 @@ read -s P; printf '%s\n' "$P" | SevenZipCLI test encrypted.7z --password-stdin
 | 路径 | 说明 |
 | --- | --- |
 | `Sources/ArchiveCore/` | GUI/CLI 共用：命令构造、路径安全检查、列表解析、旧编码文件名恢复 |
-| `Sources/SevenZip/` | SwiftUI 文件管理器、NSTableView 列表、后台任务队列、Finder 服务入口 |
+| `Sources/SevenZip/` | SwiftUI 文件管理器（双窗格外壳 ContentView + 窗格实现 PaneView）、NSTableView/NSCollectionView 列表、后台任务队列、Finder 服务入口 |
 | `Sources/SevenZipCLI/` | 命令行入口 |
+| `Extensions/QuickLookPreview/` | Quick Look 空格预览扩展（沙箱，内嵌 7zz 引擎） |
+| `Extensions/FinderSync/` | Finder Sync 右键菜单扩展 |
 | `Resources/` | Info.plist、应用图标、双语应用名 |
-| `scripts/build-macos.sh` | 一键构建：7zz 引擎 + 应用 + 打包 + 签名 |
+| `scripts/build-macos.sh` | 一键构建：7zz 引擎 + 应用 + 扩展 + 打包 + 签名 |
+| `scripts/build-extensions.sh` | 手工 .appex 管线：swiftc 编译（`-parse-as-library` + `_NSExtensionMain` 入口）+ 沙箱签名 |
 | `scripts/make-icon.swift` | 程序化生成应用图标（iconset → icns) |
 | `scripts/check-engine.sh` · `tests/check-advanced-engine.sh` | 引擎端到端测试 |
 | `Tests/ArchiveCoreTests/` | XCTest 单元测试（需完整 Xcode) |

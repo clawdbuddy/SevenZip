@@ -133,6 +133,8 @@ cp "$source_root/DOC/copying.txt" "$app_root/Contents/Resources/licenses/7zip-LG
 chmod 755 "$app_root/Contents/MacOS/SevenZip" \
           "$app_root/Contents/MacOS/SevenZipCLI" \
           "$app_root/Contents/Resources/bin/7zz"
+# 应用扩展（Quick Look 预览 + Finder 右键菜单）：在整体签名前打包进 Contents/PlugIns。
+bash "$project_root/scripts/build-extensions.sh" "$app_root"
 signing_identity="${APP_SIGN_IDENTITY:--}"
 for signed_binary in "$app_root/Contents/Resources/bin/7zz" \
                      "$app_root/Contents/MacOS/SevenZipCLI" \
