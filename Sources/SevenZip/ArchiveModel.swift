@@ -25,6 +25,7 @@ final class ArchiveModel: ObservableObject {
 
     private enum Completion {
         case listing(URL), created(URL), batchCreated(URL), extracted(URL, [String: String]), preview(URL, String, [String: String]),
+             nested(URL, String, [String: String]),
              batchPreflight(URL, URL, ConflictPolicy, String?),
              conversionExtracted(URL, URL, ArchiveFormat, String?), converted(URL, URL), tested, edited(URL), hash
     }
@@ -47,6 +48,8 @@ final class ArchiveModel: ObservableObject {
         entries = []
         listingComplete = false
         passwordNeededFor = nil
+        nestedArchiveURL = nil
+        nestedEntryPath = nil
         enqueue(ArchiveCommands.list(url, password: password), completion: .listing(url))
     }
 
@@ -124,9 +127,33 @@ final class ArchiveModel: ObservableObject {
         enqueue(ArchiveCommands.test(url, password: password), completion: .tested)
     }
 
-    func checksum() {
+    func checksum(algorithm: String = "SHA256") {
         guard let url = archiveURL else { return }
-        enqueue(ArchiveInvocation(["h", "-scrcSHA256", url.path]), completion: .hash)
+        enqueue(ArchiveInvocation(["h", "-scrc\(algorithm)", url.path]), completion: .hash)
+    }
+
+    /// 嵌套归档：把归档内的一个归档条目解压到临时目录，
+    /// 完成后通过 `nestedArchiveURL` 通知界面打开。
+    @Published var nestedArchiveURL: URL?
+    /// 嵌套条目在外层归档中的完整路径（地址栏显示用）。
+    @Published var nestedEntryPath: String?
+
+    func openNested(path: String, password: String? = nil) {
+        guard let url = archiveURL else { return }
+        guard let entry = entries.first(where: { $0.path == path }), !entry.isDirectory else {
+            report("请选择归档内的单个压缩包文件。")
+            return
+        }
+        guard ArchivePath.isSafe(path) else { report("不安全的归档路径，已拒绝打开。") ; return }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SevenZip-nested-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let invocation = try ArchiveCommands.extract(url, to: directory,
+                                                         paths: [entry.enginePath], conflict: .skip, password: password)
+            previewFolders.append(directory)
+            enqueue(invocation, completion: .nested(directory, path, ArchiveListing.legacyNameRestoreMap(entries)))
+        } catch { report(error.localizedDescription) }
     }
 
     func convert(to destination: URL, format: ArchiveFormat, password: String? = nil) {
@@ -427,6 +454,19 @@ final class ArchiveModel: ObservableObject {
                 let old = previewFolders.removeFirst()
                 try? FileManager.default.removeItem(at: old)
             }
+        case .nested(let folder, let displayPath, let restoreMap):
+            restoreRecoveredNames(in: folder, map: restoreMap)
+            let resolved = folder.appendingPathComponent(displayPath).resolvingSymlinksInPath().standardizedFileURL
+            let root = folder.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+            guard resolved.path.hasPrefix(root),
+                  FileManager.default.isReadableFile(atPath: resolved.path) else {
+                report("嵌套归档文件无效，或包含指向目标目录以外的链接。")
+                launchNext()
+                return
+            }
+            nestedArchiveURL = resolved
+            nestedEntryPath = displayPath
+            status = "已准备嵌套归档：\(resolved.lastPathComponent)"
         case .conversionExtracted(let staging, let destination, let format, let password):
             guard !containsSymlinks(staging) else {
                 report("转换中止：临时解压内容包含符号链接，需在隔离环境中手工处理。")
@@ -463,7 +503,7 @@ final class ArchiveModel: ObservableObject {
             status = "归档已更新"
             open(archive)
         case .hash:
-            status = "SHA-256 已计算，详见日志"
+            status = "校验和已计算，详见日志"
         }
         launchNext()
     }

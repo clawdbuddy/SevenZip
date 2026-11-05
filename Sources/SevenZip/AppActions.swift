@@ -22,11 +22,16 @@ final class AppActions: ObservableObject {
     var batchExtract: () -> Void = {}
     var batchCompress: () -> Void = {}
     var convert: () -> Void = {}
-    var checksum: () -> Void = {}
+    var checksum: (String) -> Void = { _ in }
     var toggleLog: () -> Void = {}
     var enterPassword: () -> Void = {}
     var fileAssociation: () -> Void = {}
     var about: () -> Void = {}
+
+    /// 平铺视图（归档内不折叠目录，显示全部条目）。菜单开关与列表共用此状态。
+    @Published var flatView = UserDefaults.standard.bool(forKey: "flatView") {
+        didSet { UserDefaults.standard.set(flatView, forKey: "flatView") }
+    }
 
     // Finder 集成：由 AppDelegate 转发，ContentView 安装实现。
     // 冷启动时文件打开事件先于界面就绪，未安装处理器时先缓冲，待 onAppear 后回放。

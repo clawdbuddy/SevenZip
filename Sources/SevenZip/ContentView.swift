@@ -33,18 +33,56 @@ struct ContentView: View {
     @State private var showAbout = false
     @State private var showAssociation = false
     @State private var manualPasswordPrompt = false
+    @State private var sortDescriptors: [NSSortDescriptor] = []
+
+    /// 嵌套归档栈：每一项记录一层外层归档的浏览状态与本次解压出的临时目录。
+    private struct NestedContext: Equatable {
+        let outerURL: URL       // 外层归档文件（最外层是磁盘文件，深层是上一层临时文件）
+        let innerFolder: String // 外层归档内的浏览位置
+        let tempDir: URL        // 本层嵌套解压出的临时目录（退出嵌套时清理）
+        let displayPath: String // 嵌套归档在外层中的路径（地址栏显示用）
+    }
+    @State private var nestingStack: [NestedContext] = []
 
     private static let archiveExtensions: Set<String> = ["7z", "zip", "tar", "gz", "tgz", "bz2", "xz", "rar", "001"]
 
     private var canEditArchive: Bool {
-        guard inArchive, let url = model.archiveURL else { return false }
+        // 嵌套归档是临时解压出的副本，写回外层不可行——一律只读。
+        guard nestingStack.isEmpty, inArchive, let url = model.archiveURL else { return false }
         return ["7z", "zip"].contains(url.pathExtension.lowercased())
     }
 
     // MARK: - Row model
 
     private var rows: [FileListRow] {
-        inArchive ? archiveRows() : localRows()
+        applySort(inArchive ? archiveRows() : localRows())
+    }
+
+    /// 表头排序：".." 恒在最前，文件夹与文件分组保持（7zFM 行为），组内按描述符排序。
+    private func applySort(_ raw: [FileListRow]) -> [FileListRow] {
+        guard let descriptor = sortDescriptors.first, let key = descriptor.key else { return raw }
+        func compare(_ lhs: FileListRow, _ rhs: FileListRow) -> Bool {
+            var result: ComparisonResult
+            switch key {
+            case "size":
+                result = lhs.sizeKey == rhs.sizeKey ? .orderedSame
+                    : (lhs.sizeKey < rhs.sizeKey ? .orderedAscending : .orderedDescending)
+            case "packed":
+                result = lhs.packedKey == rhs.packedKey ? .orderedSame
+                    : (lhs.packedKey < rhs.packedKey ? .orderedAscending : .orderedDescending)
+            case "modified":
+                result = lhs.modifiedKey.compare(rhs.modifiedKey)
+            default:
+                result = lhs.name.localizedStandardCompare(rhs.name)
+            }
+            if result == .orderedSame { result = lhs.name.localizedStandardCompare(rhs.name) }
+            let ascending = descriptor.ascending ? result != .orderedDescending : result == .orderedDescending
+            return ascending
+        }
+        let up = raw.filter { $0.kind == .up }
+        let folders = raw.filter { $0.kind == .folder }.sorted(by: compare)
+        let files = raw.filter { $0.kind == .file }.sorted(by: compare)
+        return up + folders + files
     }
 
     private func localRows() -> [FileListRow] {
@@ -61,10 +99,14 @@ struct ContentView: View {
             } ?? ""
             let sizeText = isDirectory ? "文件夹"
                 : (values?.fileSize.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "—")
-            result.append(FileListRow(id: file.path, kind: isDirectory ? .folder : .file,
-                                      name: file.lastPathComponent, sizeText: sizeText, packedText: "",
-                                      modified: modified,
-                                      isArchiveFile: Self.archiveExtensions.contains(file.pathExtension.lowercased())))
+            var row = FileListRow(id: file.path, kind: isDirectory ? .folder : .file,
+                                  name: file.lastPathComponent, sizeText: sizeText, packedText: "",
+                                  modified: modified,
+                                  isArchiveFile: Self.archiveExtensions.contains(file.pathExtension.lowercased()))
+            row.sizeKey = values?.fileSize.map { Int64($0) } ?? -1
+            row.modifiedKey = values?.contentModificationDate
+                .map { String(format: "%020.3f", $0.timeIntervalSince1970) } ?? ""
+            result.append(row)
         }
         return result
     }
@@ -73,6 +115,18 @@ struct ContentView: View {
     private func archiveRows() -> [FileListRow] {
         var result: [FileListRow] = [FileListRow(id: "..", kind: .up, name: "..", sizeText: "", packedText: "",
                                                  modified: "", isArchiveFile: false)]
+        let byName: (FileListRow, FileListRow) -> Bool = {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+        // 平铺视图：不折叠目录，直接列出全部文件条目，名称列显示完整相对路径。
+        if actions.flatView {
+            var files: [FileListRow] = []
+            for entry in model.entries where !entry.isDirectory {
+                files.append(fileRow(for: entry, displayName: entry.path))
+            }
+            result += files.sorted(by: byName)
+            return result
+        }
         let prefix = innerFolder.isEmpty ? "" : innerFolder + "/"
         var foldersSeen = Set<String>()
         var folders: [FileListRow] = []
@@ -87,34 +141,50 @@ struct ContentView: View {
                 if foldersSeen.insert(name).inserted {
                     let fullPath = prefix + name
                     let modified = model.entries.first { $0.path == fullPath && $0.isDirectory }?.modified ?? ""
-                    folders.append(FileListRow(id: fullPath, kind: .folder, name: name, sizeText: "文件夹",
-                                               packedText: "", modified: modified, isArchiveFile: false))
+                    var row = FileListRow(id: fullPath, kind: .folder, name: name, sizeText: "文件夹",
+                                          packedText: "", modified: modified, isArchiveFile: false)
+                    row.modifiedKey = modified
+                    folders.append(row)
                 }
             } else if entry.isDirectory {
                 if foldersSeen.insert(rest).inserted {
-                    folders.append(FileListRow(id: entry.path, kind: .folder, name: rest, sizeText: "文件夹",
-                                               packedText: "", modified: entry.modified, isArchiveFile: false))
+                    var row = FileListRow(id: entry.path, kind: .folder, name: rest, sizeText: "文件夹",
+                                          packedText: "", modified: entry.modified, isArchiveFile: false)
+                    row.modifiedKey = entry.modified
+                    folders.append(row)
                 }
             } else {
-                files.append(FileListRow(id: entry.path, kind: .file, name: rest, sizeText: entry.sizeLabel,
-                                         packedText: entry.packedLabel, modified: entry.modified,
-                                         isArchiveFile: Self.archiveExtensions.contains(
-                                            URL(fileURLWithPath: rest).pathExtension.lowercased())))
+                files.append(fileRow(for: entry, displayName: rest))
             }
-        }
-        let byName: (FileListRow, FileListRow) -> Bool = {
-            $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
         result += folders.sorted(by: byName) + files.sorted(by: byName)
         return result
+    }
+
+    private func fileRow(for entry: ArchiveEntry, displayName: String) -> FileListRow {
+        var row = FileListRow(id: entry.path, kind: .file, name: displayName, sizeText: entry.sizeLabel,
+                              packedText: entry.packedLabel, modified: entry.modified,
+                              isArchiveFile: Self.archiveExtensions.contains(
+                                URL(fileURLWithPath: entry.path).pathExtension.lowercased()))
+        row.sizeKey = entry.size ?? -1
+        row.packedKey = entry.packedSize ?? -1
+        row.modifiedKey = entry.modified
+        return row
     }
 
     // MARK: - Address
 
     private var addressText: String {
         if inArchive, let archive = model.archiveURL {
+            // 嵌套时把外层路径逐层拼上：outer.zip\inner.7z\…
+            let base: String
+            if let first = nestingStack.first {
+                base = first.outerURL.path + nestingStack.map { "\\" + $0.displayPath }.joined()
+            } else {
+                base = archive.path
+            }
             let inner = innerFolder.replacingOccurrences(of: "/", with: "\\")
-            return inner.isEmpty ? archive.path + "\\" : archive.path + "\\" + inner + "\\"
+            return inner.isEmpty ? base + "\\" : base + "\\" + inner + "\\"
         }
         return currentDir.path
     }
@@ -158,6 +228,18 @@ struct ContentView: View {
         .onChange(of: model.archiveURL) { _ in
             innerFolder = ""
             selected.removeAll()
+        }
+        .onChange(of: model.nestedArchiveURL) { nested in
+            // 嵌套归档已解压到临时目录：压栈并切换进去（model.open 会重置 nestedArchiveURL）。
+            guard let nested, let outer = model.archiveURL, inArchive else { return }
+            let context = NestedContext(outerURL: outer,
+                                        innerFolder: innerFolder,
+                                        tempDir: nested.deletingLastPathComponent(),
+                                        displayPath: model.nestedEntryPath ?? nested.lastPathComponent)
+            nestingStack.append(context)
+            innerFolder = ""
+            selected.removeAll()
+            model.open(nested, password: consumePassword())
         }
         .onChange(of: model.entries) { entries in
             selected.formIntersection(Set(entries.map(\.path)).union([".."]))
@@ -265,7 +347,8 @@ struct ContentView: View {
 
     private var fileList: some View {
         FileListView(rows: rows, selection: $selected,
-                     onActivate: activate, menuProvider: menuItems)
+                     onActivate: activate, menuProvider: menuItems,
+                     onSortChange: { sortDescriptors = $0 })
     }
 
     /// Right-click menu: local disk and archive contents get distinct action
@@ -635,7 +718,12 @@ struct ContentView: View {
             }
         case .file:
             if inArchive {
-                model.preview(path: row.id, password: consumePassword())
+                if row.isArchiveFile {
+                    // 归档里的归档：解压到临时目录后作为新一层进入（只读）。
+                    model.openNested(path: row.id, password: consumePassword())
+                } else {
+                    model.preview(path: row.id, password: consumePassword())
+                }
             } else {
                 let url = URL(fileURLWithPath: row.id)
                 if row.isArchiveFile {
@@ -653,6 +741,11 @@ struct ContentView: View {
         if inArchive {
             if !innerFolder.isEmpty {
                 innerFolder = innerFolder.components(separatedBy: "/").dropLast().joined(separator: "/")
+            } else if let context = nestingStack.popLast() {
+                // 嵌套根目录的 ".."：回到外层归档并清理本层临时文件。
+                try? FileManager.default.removeItem(at: context.tempDir)
+                innerFolder = context.innerFolder
+                model.open(context.outerURL)
             } else if let archive = model.archiveURL {
                 // ".." at the archive root climbs back out to the disk (7zFM behavior).
                 inArchive = false
@@ -668,8 +761,17 @@ struct ContentView: View {
         }
     }
 
+    /// 打开/关闭/跳转归档前调用：清掉所有嵌套层及其临时目录。
+    private func clearNesting() {
+        for context in nestingStack {
+            try? FileManager.default.removeItem(at: context.tempDir)
+        }
+        nestingStack.removeAll()
+    }
+
     private func openArchive(_ url: URL) {
         pushHistory()
+        clearNesting()
         inArchive = true
         innerFolder = ""
         selected.removeAll()
@@ -677,7 +779,8 @@ struct ContentView: View {
     }
 
     private func closeArchive() {
-        guard let archive = model.archiveURL else { return }
+        guard let archive = nestingStack.first?.outerURL ?? model.archiveURL else { return }
+        clearNesting()
         inArchive = false
         currentDir = archive.deletingLastPathComponent()
         selected.removeAll()
@@ -685,6 +788,7 @@ struct ContentView: View {
     }
 
     private func navigateToAddress(_ address: String) {
+        clearNesting()
         if let archive = model.archiveURL,
            address.hasPrefix(archive.path + "\\") {
             inArchive = true
@@ -926,7 +1030,7 @@ struct ContentView: View {
         actions.batchExtract = chooseBatchExtraction
         actions.batchCompress = chooseBatchCompression
         actions.convert = chooseConversion
-        actions.checksum = { [model] in if inArchive { model.checksum() } }
+        actions.checksum = { [model] algorithm in if inArchive { model.checksum(algorithm: algorithm) } }
         actions.toggleLog = { showLog.toggle() }
         actions.enterPassword = { manualPasswordPrompt = true }
         actions.fileAssociation = { showAssociation = true }

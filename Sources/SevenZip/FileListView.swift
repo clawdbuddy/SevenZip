@@ -11,6 +11,10 @@ struct FileListRow: Identifiable, Hashable {
     let packedText: String
     let modified: String
     let isArchiveFile: Bool
+    // 排序键（展示文本无法数值比较，单独携带）
+    var sizeKey: Int64 = -1
+    var packedKey: Int64 = -1
+    var modifiedKey: String = ""   // ISO 风格字符串可直接字典序比较
 }
 
 struct FileListMenuAction {
@@ -31,6 +35,8 @@ struct FileListView: NSViewRepresentable {
     @Binding var selection: Set<String>
     let onActivate: (FileListRow) -> Void
     let menuProvider: (FileListRow?) -> [FileListMenuAction]
+    /// 点击表头排序时回调（空数组 = 恢复默认顺序）。
+    var onSortChange: ([NSSortDescriptor]) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -58,6 +64,7 @@ struct FileListView: NSViewRepresentable {
             column.title = title
             column.width = width
             column.minWidth = 60
+            column.sortDescriptorPrototype = NSSortDescriptor(key: identifier, ascending: true)
             table.addTableColumn(column)
         }
 
@@ -171,6 +178,11 @@ struct FileListView: NSViewRepresentable {
             let row = sender.clickedRow
             guard row >= 0, row < parent.rows.count else { return }
             parent.onActivate(parent.rows[row])
+        }
+
+        func tableView(_ tableView: NSTableView,
+                       sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
+            parent.onSortChange(tableView.sortDescriptors)
         }
 
         // MARK: Context menu

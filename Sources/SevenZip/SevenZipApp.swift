@@ -44,6 +44,7 @@ struct SevenZipApp: App {
                     .keyboardShortcut("r")
                 Button("返回上级目录") { actions.goUp() }
                     .keyboardShortcut(.upArrow, modifiers: .command)
+                Toggle("平铺视图", isOn: $actions.flatView)
                 Divider()
                 Button("运行日志") { actions.toggleLog() }
                     .keyboardShortcut("l")
@@ -56,7 +57,11 @@ struct SevenZipApp: App {
                 Button("批量压缩…") { actions.batchCompress() }
                 Button("格式转换…") { actions.convert() }
                 Divider()
-                Button("计算 SHA-256") { actions.checksum() }
+                Menu("计算校验和") {
+                    ForEach(["CRC32", "CRC64", "SHA1", "SHA256", "SHA512", "BLAKE2sp"], id: \.self) { algo in
+                        Button(algo) { actions.checksum(algo) }
+                    }
+                }
                 Button("输入压缩包密码…") { actions.enterPassword() }
                 Divider()
                 Button("文件类型关联…") { actions.fileAssociation() }
