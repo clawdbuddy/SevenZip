@@ -64,23 +64,10 @@ final class ArchiveCoreTests: XCTestCase {
 extension ArchiveCoreTests {
     /// GBK 字节经 7-Zip 的 PUA 映射后，应还原为原始中文名。
     func testLegacyZipNameRecoveryGBK() {
-        // "中文文件.txt" 的 GBK 字节，其中 C4 BC 恰好是合法 UTF-8（ļ），按引擎行为原样保留
-        let gbkBytes: [UInt8] = [0xD6, 0xD0, 0xCE, 0xC4, 0xC4, 0xBC, 0xFE, 0x2E, 0x74, 0x78, 0x74]
-        var engineName = ""
-        var index = 0
-        while index < gbkBytes.count {
-            let byte = gbkBytes[index]
-            if byte == 0xC4, index + 1 < gbkBytes.count, gbkBytes[index + 1] == 0xBC {
-                engineName.append("ļ") // 引擎会把合法 UTF-8 序列直接透传
-                index += 2
-            } else if byte < 0x80 {
-                engineName.append(Character(Unicode.Scalar(byte)))
-                index += 1
-            } else {
-                engineName.append(Character(Unicode.Scalar(0xEF00 + UInt32(byte))!))
-                index += 1
-            }
-        }
+        // "中文文件.txt" 的 GBK 字节流：D6D0 CEC4 CEC4 BCFE。
+        // 引擎行为：恰好构成合法 UTF-8 的字节对原样透传（CE C4 → Ą，出现两次），
+        // 其余非 ASCII 字节映射到 U+EF00+byte（D6、D0、BC、FE）。
+        let engineName = "\u{EFD6}\u{EFD0}ĄĄ\u{EFBC}\u{FEFE}.txt"
         XCTAssertEqual(LegacyZipName.recover(engineName), "中文文件.txt")
     }
 
