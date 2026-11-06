@@ -94,13 +94,25 @@ final class AppActions: ObservableObject {
     enum PendingService {
         case open([URL])
         case extract([URL])
-        case compress([URL])
+        case extractFolder([URL])          // 解压到 "名称/"（同名子目录）
+        case extractChoose([URL])          // 解压到…（弹窗选目录）
+        case test([URL])                   // 测试压缩包
+        case addDialog([URL], email: Bool) // 添加到压缩包…（弹选项；email=压缩并邮件…）
+        case compress([URL], format: String)
+        case compressEmail([URL], format: String)
+        case checksum([URL], algorithm: String)
     }
     var handlersInstalled = false
     var pendingServices: [PendingService] = []
     var openFiles: ([URL]) -> Void = { _ in }
     var extractInPlace: ([URL]) -> Void = { _ in }
-    var compressInPlace: ([URL]) -> Void = { _ in }
+    var extractToNamedFolder: ([URL]) -> Void = { _ in }
+    var extractChooseDestination: ([URL]) -> Void = { _ in }
+    var testArchives: ([URL]) -> Void = { _ in }
+    var addToArchiveDialog: ([URL], Bool) -> Void = { _, _ in }
+    var compressInPlace: ([URL], String) -> Void = { _, _ in }
+    var compressAndEmail: ([URL], String) -> Void = { _, _ in }
+    var checksumFiles: ([URL], String) -> Void = { _, _ in }
 
     func routeOpenFiles(_ urls: [URL]) {
         if handlersInstalled { openFiles(urls) } else { pendingServices.append(.open(urls)) }
@@ -108,8 +120,52 @@ final class AppActions: ObservableObject {
     func routeExtractInPlace(_ urls: [URL]) {
         if handlersInstalled { extractInPlace(urls) } else { pendingServices.append(.extract(urls)) }
     }
-    func routeCompressInPlace(_ urls: [URL]) {
-        if handlersInstalled { compressInPlace(urls) } else { pendingServices.append(.compress(urls)) }
+    func routeExtractToNamedFolder(_ urls: [URL]) {
+        if handlersInstalled { extractToNamedFolder(urls) } else { pendingServices.append(.extractFolder(urls)) }
+    }
+    func routeExtractChooseDestination(_ urls: [URL]) {
+        if handlersInstalled { extractChooseDestination(urls) } else { pendingServices.append(.extractChoose(urls)) }
+    }
+    func routeTestArchives(_ urls: [URL]) {
+        if handlersInstalled { testArchives(urls) } else { pendingServices.append(.test(urls)) }
+    }
+    func routeAddToArchiveDialog(_ urls: [URL], email: Bool = false) {
+        if handlersInstalled { addToArchiveDialog(urls, email) } else { pendingServices.append(.addDialog(urls, email: email)) }
+    }
+    func routeCompressInPlace(_ urls: [URL], format: String = "zip") {
+        if handlersInstalled { compressInPlace(urls, format) } else { pendingServices.append(.compress(urls, format: format)) }
+    }
+    func routeCompressAndEmail(_ urls: [URL], format: String) {
+        if handlersInstalled { compressAndEmail(urls, format) } else { pendingServices.append(.compressEmail(urls, format: format)) }
+    }
+    func routeChecksumFiles(_ urls: [URL], algorithm: String) {
+        if handlersInstalled { checksumFiles(urls, algorithm) } else { pendingServices.append(.checksum(urls, algorithm: algorithm)) }
+    }
+
+    /// 解析 sevenzip://<action>?path=… 命令 URL 并路由（AppDelegate 与
+    /// SwiftUI .onOpenURL 两条投递路径共用；冷启动时自动缓冲）。
+    func routeCommandURL(_ url: URL) {
+        guard url.scheme == "sevenzip",
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        let files = (components.queryItems ?? [])
+            .filter { $0.name == "path" }
+            .compactMap(\.value)
+            .map { URL(fileURLWithPath: $0) }
+        guard !files.isEmpty else { return }
+        let format = components.queryItems?.first { $0.name == "format" }?.value ?? "zip"
+        let algorithm = components.queryItems?.first { $0.name == "algo" }?.value ?? "SHA256"
+        switch url.host {
+        case "extract": routeExtractInPlace(files)
+        case "extract-folder": routeExtractToNamedFolder(files)
+        case "extract-choose": routeExtractChooseDestination(files)
+        case "test": routeTestArchives(files)
+        case "add-dialog": routeAddToArchiveDialog(files)
+        case "compress-email-dialog": routeAddToArchiveDialog(files, email: true)
+        case "compress": routeCompressInPlace(files, format: format)
+        case "compress-email": routeCompressAndEmail(files, format: format)
+        case "checksum": routeChecksumFiles(files, algorithm: algorithm)
+        default: routeOpenFiles(files)
+        }
     }
 
     /// ContentView.onAppear 在 installMenuActions 之后调用，回放缓冲的服务请求。
@@ -120,7 +176,13 @@ final class AppActions: ObservableObject {
             switch item {
             case .open(let urls): openFiles(urls)
             case .extract(let urls): extractInPlace(urls)
-            case .compress(let urls): compressInPlace(urls)
+            case .extractFolder(let urls): extractToNamedFolder(urls)
+            case .extractChoose(let urls): extractChooseDestination(urls)
+            case .test(let urls): testArchives(urls)
+            case .addDialog(let urls, let email): addToArchiveDialog(urls, email)
+            case .compress(let urls, let format): compressInPlace(urls, format)
+            case .compressEmail(let urls, let format): compressAndEmail(urls, format)
+            case .checksum(let urls, let algorithm): checksumFiles(urls, algorithm)
             }
         }
     }

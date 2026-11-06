@@ -24,10 +24,10 @@ final class ArchiveModel: ObservableObject {
     private var previewFolders: [URL] = []
 
     private enum Completion {
-        case listing(URL), created(URL), batchCreated(URL), extracted(URL, [String: String]), preview(URL, String, [String: String]),
+        case listing(URL), created(URL), createdForEmail(URL), batchCreated(URL), extracted(URL, [String: String]), preview(URL, String, [String: String]),
              nested(URL, String, [String: String]),
              batchPreflight(URL, URL, ConflictPolicy, String?),
-             conversionExtracted(URL, URL, ArchiveFormat, String?), converted(URL, URL), tested, edited(URL), hash
+             conversionExtracted(URL, URL, ArchiveFormat, String?), converted(URL, URL), tested(URL?), edited(URL), hash
     }
 
     private struct Job {
@@ -55,14 +55,15 @@ final class ArchiveModel: ObservableObject {
 
     func dismissPasswordRequest() { passwordNeededFor = nil }
 
-    func compress(sources: [URL], destination: URL, options: CompressionOptions) {
+    func compress(sources: [URL], destination: URL, options: CompressionOptions,
+                  emailAfter: Bool = false) {
         guard !FileManager.default.fileExists(atPath: destination.path) else {
             report("目标文件已存在；请更换压缩包名称，以免意外修改已有文件。")
             return
         }
         do {
             let command = try ArchiveCommands.create(sources: sources, archive: destination, options: options)
-            enqueue(command, completion: .created(destination))
+            enqueue(command, completion: emailAfter ? .createdForEmail(destination) : .created(destination))
         } catch { report(error.localizedDescription) }
     }
 
@@ -124,8 +125,37 @@ final class ArchiveModel: ObservableObject {
 
     func test(password: String? = nil) {
         guard let url = archiveURL else { return }
-        enqueue(ArchiveCommands.test(url, password: password), completion: .tested)
+        enqueue(ArchiveCommands.test(url, password: password), completion: .tested(url))
     }
+
+    /// 测试任意归档（无需先在界面打开），供 Finder 扩展「测试压缩包」使用。
+    func testArchive(_ url: URL, password: String? = nil) {
+        enqueue(ArchiveCommands.test(url, password: password), completion: .tested(url))
+    }
+
+    /// 解压任意归档到精确目录（无需先在界面打开）：先列清单做路径安全检查，再解压。
+    /// Extract Here = 归档所在目录；Extract to "名称/" = 同名子目录。
+    func extractArchive(_ archive: URL, to destination: URL, createDirectory: Bool,
+                        conflict: ConflictPolicy = .skip, password: String? = nil) {
+        do {
+            if createDirectory {
+                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            }
+            let list = ArchiveCommands.list(archive, password: password)
+            enqueue(list, completion: .batchPreflight(archive, destination, conflict, password))
+        } catch { report(error.localizedDescription) }
+    }
+
+    /// 计算任意磁盘文件的校验和（无需打开归档），结果写入运行日志。
+    func checksumFiles(_ urls: [URL], algorithm: String) {
+        for url in urls {
+            enqueue(ArchiveInvocation(["h", "-scrc\(algorithm)", url.path]), completion: .hash)
+        }
+        if !urls.isEmpty { announce("已加入校验和队列：\(urls.count) 个文件（\(algorithm)）。") }
+    }
+
+    /// 压缩完成后需调出邮件分享时，经此 @Published 通知界面。
+    @Published var emailShareURL: URL?
 
     func checksum(algorithm: String = "SHA256") {
         guard let url = archiveURL else { return }
@@ -408,6 +438,10 @@ final class ArchiveModel: ObservableObject {
             entries = parsed
             listingComplete = true
             status = "\(archive.lastPathComponent)：\(entries.count) 项"
+        case .createdForEmail(let archive):
+            // 不打开归档，仅通知界面发起邮件分享（Finder「压缩并邮件」）。
+            emailShareURL = archive
+            status = "已创建 \(archive.lastPathComponent)，正在调出邮件…"
         case .created(let archive):
             status = "已创建 \(archive.lastPathComponent)"
             let firstVolume = archive.appendingPathExtension("001")
@@ -497,8 +531,8 @@ final class ArchiveModel: ObservableObject {
         case .converted(let destination, let staging):
             try? FileManager.default.removeItem(at: staging)
             status = "格式转换完成：\(destination.lastPathComponent)"
-        case .tested:
-            status = "归档完整性校验通过"
+        case .tested(let url):
+            status = url.map { "完整性校验通过：\($0.lastPathComponent)" } ?? "归档完整性校验通过"
         case .edited(let archive):
             status = "归档已更新"
             open(archive)

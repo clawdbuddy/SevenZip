@@ -66,7 +66,7 @@ NOTARY_PROFILE="my-notary-profile" bash scripts/build-macos.sh
 
 快捷键可在 `系统设置 → 键盘 → 键盘快捷键 → 服务` 中配置。服务若不显示，注销重登一次即可。
 
-**Finder 右键一级菜单（Finder Sync 扩展）**：首次安装后需在 `系统设置 → 隐私与安全性 → 扩展 → Finder` 中勾选「SevenZip Finder」（macOS 强制手动启用）。之后在 Finder 任意位置右键文件/文件夹，即可在「七压 SevenZip」子菜单中直接 打开 / 解压到当前目录 / 压缩所选项目。
+**Finder 右键一级菜单（Finder Sync 扩展，全量对齐 Windows 7-Zip）**：首次安装后需在 `系统设置 → 隐私与安全性 → 扩展 → Finder` 中勾选「SevenZip Finder」（macOS 强制手动启用）。右键选中归档：使用七压打开 / 解压到… / 解压到当前目录 / 解压到 "名称/" / 测试压缩包；右键任意文件：添加到压缩包… / 压缩并邮件… / 添加到 "名称.7z" / 压缩为 "名称.7z" 并邮件 / 添加到 "名称.zip" / 压缩为 "名称.zip" 并邮件 / CRC SHA 子菜单（CRC32、CRC64、SHA-1、SHA-256）。
 
 **Quick Look 空格预览**：选中压缩包按空格即可查看内容清单，无需打开应用（首次使用若未生效，运行一次主程序或注销重登）。
 

@@ -30,6 +30,8 @@ struct PaneView: View {
     @State private var options = CompressionOptions()
     @State private var sourcesForCompression: [URL] = []
     @State private var batchCompression = false
+    /// 「压缩并邮件…」：压缩选项确认后，创建完成自动调出邮件分享。
+    @State private var emailAfterCreate = false
     @State private var showCompressionSheet = false
     @State private var showDeleteConfirmation = false
     @State private var showRenameDialog = false
@@ -230,7 +232,15 @@ struct PaneView: View {
             retryPasswordSheet
         }
         .quickLookPreview($model.previewURL)
-        .onOpenURL { url in openArchive(url) }
+        .onOpenURL { url in
+            // WindowGroup 场景下自定义 scheme 也投递到这里：文件直接打开，
+            // sevenzip:// 命令经 AppActions 路由（仅焦点窗格响应，避免双窗格重复执行）。
+            if url.isFileURL {
+                openArchive(url)
+            } else if url.scheme == "sevenzip", isFocused {
+                actions.routeCommandURL(url)
+            }
+        }
         .onAppear {
             refreshLocal()
             // 只有焦点窗格安装菜单处理器；非焦点窗格安装跨窗格接收钩子。
@@ -240,6 +250,18 @@ struct PaneView: View {
         }
         .onChange(of: isFocused) { focused in
             if focused { installMenuActions() } else { installOtherPaneHooks() }
+        }
+        .onChange(of: model.emailShareURL) { url in
+            // 「压缩并邮件」：压缩完成后调出系统邮件分享；未配置邮件则回退到 Finder 选中。
+            guard let url else { return }
+            model.emailShareURL = nil
+            if let service = NSSharingService(named: .composeEmail) {
+                service.perform(withItems: [url])
+            } else {
+                NSWorkspace.shared.selectFile(url.path,
+                                              inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+                model.warn("系统未配置邮件应用，已在 Finder 中选中生成的压缩包。")
+            }
         }
         .onChange(of: model.archiveURL) { _ in
             innerFolder = ""
@@ -1021,7 +1043,9 @@ struct PaneView: View {
         save.nameFieldStringValue = sourcesForCompression[0].lastPathComponent + "." + options.format.rawValue
         save.canCreateDirectories = true
         guard save.runModal() == .OK, let url = save.url else { return }
-        model.compress(sources: sourcesForCompression, destination: url, options: options)
+        model.compress(sources: sourcesForCompression, destination: url, options: options,
+                       emailAfter: emailAfterCreate)
+        emailAfterCreate = false
         options.password = ""
         showCompressionSheet = false
     }
@@ -1070,6 +1094,7 @@ struct PaneView: View {
             openArchive(first)
             if urls.count > 1 { model.announce("已打开 \(first.lastPathComponent)；其余 \(urls.count - 1) 个文件未处理。") }
         }
+        // 解压到当前目录（Extract Here）：直接对所选归档操作，不要求先打开。
         actions.extractInPlace = { [model] urls in
             let archives = urls.filter { Self.archiveExtensions.contains($0.pathExtension.lowercased()) }
             guard !archives.isEmpty else {
@@ -1077,27 +1102,102 @@ struct PaneView: View {
                 return
             }
             for archive in archives {
-                model.extract(to: archive.deletingLastPathComponent(), paths: [],
-                              conflict: conflict, password: nil)
+                model.extractArchive(archive, to: archive.deletingLastPathComponent(),
+                                     createDirectory: false, conflict: conflict)
             }
             model.announce("已加入解压队列：\(archives.count) 个压缩包，解压到各自所在目录。")
         }
-        actions.compressInPlace = { [model] urls in
+        // 解压到 "名称/"（同名子目录）。
+        actions.extractToNamedFolder = { [model] urls in
+            let archives = urls.filter { Self.archiveExtensions.contains($0.pathExtension.lowercased()) }
+            guard !archives.isEmpty else {
+                model.warn("所选项目不包含支持的压缩包（7z/zip/rar/tar/gz/xz）。")
+                return
+            }
+            for archive in archives {
+                let dest = archive.deletingLastPathComponent()
+                    .appendingPathComponent(Self.baseName(for: [archive]), isDirectory: true)
+                model.extractArchive(archive, to: dest, createDirectory: true, conflict: conflict)
+            }
+            model.announce("已加入解压队列：\(archives.count) 个压缩包，解压到各自同名文件夹。")
+        }
+        // 解压到…（弹窗选目录）。
+        actions.extractChooseDestination = { [model] urls in
+            let archives = urls.filter { Self.archiveExtensions.contains($0.pathExtension.lowercased()) }
+            guard !archives.isEmpty, let dest = chooseFolderPanel(title: "选择解压目标目录") else { return }
+            for archive in archives {
+                model.extractArchive(archive, to: dest, createDirectory: false, conflict: conflict)
+            }
+            model.announce("已加入解压队列：\(archives.count) 个压缩包 → \(dest.path)")
+        }
+        // 测试压缩包。
+        actions.testArchives = { [model] urls in
+            let archives = urls.filter { Self.archiveExtensions.contains($0.pathExtension.lowercased()) }
+            guard !archives.isEmpty else {
+                model.warn("所选项目不包含支持的压缩包（7z/zip/rar/tar/gz/xz）。")
+                return
+            }
+            for archive in archives { model.testArchive(archive) }
+            showLog = true
+        }
+        // 添加到压缩包…（弹压缩选项；email=true 即「压缩并邮件…」）。
+        actions.addToArchiveDialog = { urls, email in
+            sourcesForCompression = urls
+            batchCompression = false
+            options = CompressionOptions()
+            emailAfterCreate = email
+            showCompressionSheet = true
+        }
+        // 添加到 "名称.7z" / "名称.zip"（免确认，默认选项）。
+        actions.compressInPlace = { [model] urls, format in
             guard let first = urls.first else { return }
             let parent = first.deletingLastPathComponent()
-            let base = urls.count == 1 ? first.deletingPathExtension().lastPathComponent : "Archive"
-            var zipOptions = CompressionOptions()
-            zipOptions.format = .zip
-            var destination = parent.appendingPathComponent(base + ".zip")
+            let base = Self.baseName(for: urls)
+            var compressOptions = CompressionOptions()
+            compressOptions.format = ArchiveFormat(rawValue: format) ?? .zip
+            var destination = parent.appendingPathComponent("\(base).\(compressOptions.format.rawValue)")
             var suffix = 2
             while FileManager.default.fileExists(atPath: destination.path) {
-                destination = parent.appendingPathComponent("\(base)-\(suffix).zip")
+                destination = parent.appendingPathComponent("\(base)-\(suffix).\(compressOptions.format.rawValue)")
                 suffix += 1
             }
-            model.compress(sources: urls, destination: destination, options: zipOptions)
+            model.compress(sources: urls, destination: destination, options: compressOptions)
             model.announce("已加入压缩队列：\(destination.lastPathComponent)")
         }
+        // 压缩为 "名称.7z/zip" 并邮件。
+        actions.compressAndEmail = { [model] urls, format in
+            guard let first = urls.first else { return }
+            let parent = first.deletingLastPathComponent()
+            let base = Self.baseName(for: urls)
+            var compressOptions = CompressionOptions()
+            compressOptions.format = ArchiveFormat(rawValue: format) ?? .sevenZip
+            var destination = parent.appendingPathComponent("\(base).\(compressOptions.format.rawValue)")
+            var suffix = 2
+            while FileManager.default.fileExists(atPath: destination.path) {
+                destination = parent.appendingPathComponent("\(base)-\(suffix).\(compressOptions.format.rawValue)")
+                suffix += 1
+            }
+            model.compress(sources: urls, destination: destination, options: compressOptions, emailAfter: true)
+            model.announce("已加入压缩队列：\(destination.lastPathComponent)（完成后调出邮件）")
+        }
+        // CRC SHA：计算所选文件的校验和，结果显示在运行日志。
+        actions.checksumFiles = { [model] urls, algorithm in
+            guard !urls.isEmpty else { return }
+            model.checksumFiles(urls, algorithm: algorithm)
+            showLog = true
+        }
         actions.handlersInstalled = true
+    }
+
+    /// 右键菜单基础名：单选取其文件名（剥离 .tar.gz 等复合扩展名），多选统一为 Archive。
+    private static func baseName(for urls: [URL]) -> String {
+        guard let first = urls.first, urls.count == 1 else { return "Archive" }
+        let name = first.lastPathComponent
+        let lower = name.lowercased()
+        for compound in [".tar.gz", ".tar.bz2", ".tar.xz", ".tgz"] where lower.hasSuffix(compound) {
+            return String(name.dropLast(compound.count))
+        }
+        return first.deletingPathExtension().lastPathComponent
     }
 
     /// 非焦点窗格安装：向焦点窗格暴露自己的位置与「接收文件」能力。
