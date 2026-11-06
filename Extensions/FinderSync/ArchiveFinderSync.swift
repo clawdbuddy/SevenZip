@@ -3,7 +3,7 @@ import FinderSync
 
 /// Finder 右键一级菜单（七压 SevenZip 子菜单）：
 /// 归档：使用七压打开 / 解压到… / 解压到当前目录 / 解压到 "名称/" / 测试压缩包
-/// 任意：添加到压缩包… / 压缩并邮件… / CRC SHA 子菜单
+/// 任意：添加到压缩包… / 压缩并邮件…
 /// 所有操作经 sevenzip:// URL scheme 回传主程序（AppDelegate → AppActions 路由）。
 /// 用户需在 系统设置 → 隐私与安全性 → 扩展 → Finder 中勾选启用（macOS 强制）。
 final class ArchiveFinderSync: FIFinderSync {
@@ -41,20 +41,6 @@ final class ArchiveFinderSync: FIFinderSync {
         // 压缩与邮件（任意文件/文件夹）。
         addItem(to: menu, title: "添加到压缩包…", action: #selector(addToArchiveDialog))
         addItem(to: menu, title: "压缩并邮件…", action: #selector(compressAndEmailDialog))
-        menu.addItem(.separator())
-
-        // CRC SHA 子菜单。
-        let checksumMenu = NSMenu()
-        for (title, algo) in [("CRC32", "CRC32"), ("CRC64", "CRC64"),
-                              ("SHA-1", "SHA1"), ("SHA-256", "SHA256")] {
-            let item = NSMenuItem(title: title, action: #selector(checksum(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = algo
-            checksumMenu.addItem(item)
-        }
-        let checksumItem = NSMenuItem(title: "CRC SHA", action: nil, keyEquivalent: "")
-        checksumItem.submenu = checksumMenu
-        menu.addItem(checksumItem)
         return menu
     }
 
@@ -109,11 +95,6 @@ final class ArchiveFinderSync: FIFinderSync {
     @objc private func testArchive() { sendCommand(host: "test") }
     @objc private func addToArchiveDialog() { sendCommand(host: "add-dialog") }
     @objc private func compressAndEmailDialog() { sendCommand(host: "compress-email-dialog") }
-
-    @objc private func checksum(_ sender: NSMenuItem) {
-        guard let algo = sender.representedObject as? String else { return }
-        sendCommand(host: "checksum", extra: [URLQueryItem(name: "algo", value: algo)])
-    }
 
     /// sevenzip://<action>?path=…&path=… 回传主程序；主程序 Info.plist 声明了该 scheme。
     private func sendCommand(host: String, extra: [URLQueryItem] = []) {

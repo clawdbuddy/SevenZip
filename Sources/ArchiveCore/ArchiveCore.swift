@@ -144,6 +144,30 @@ public enum ExtractPathMode: String, CaseIterable, Identifiable {
     var command: String { self == .flat ? "e" : "x" }
 }
 
+/// 更新模式（对齐 7-Zip GUI 的 Update mode；动作码取自官方源码
+/// CPP/7zip/UI/Common/UpdateAction.cpp 的四个预设）。
+public enum UpdateMode: String, CaseIterable, Identifiable {
+    case add, update, freshen, sync
+    public var id: String { rawValue }
+    public var title: String {
+        switch self {
+        case .add: return "添加并替换文件"
+        case .update: return "更新并添加文件"
+        case .freshen: return "仅更新已存在文件"
+        case .sync: return "同步归档内容"
+        }
+    }
+    /// k_ActionSet_Add/Update/Fresh/Sync，状态序 p q r x y z w，动作 0忽略 1复制 2压缩。
+    var switchValue: String {
+        switch self {
+        case .add: return "-up1q1r2x2y2z2w2"
+        case .update: return "-up1q1r2x1y2z1w2"
+        case .freshen: return "-up1q1r0x1y2z1w2"
+        case .sync: return "-up1q0r2x1y2z1w2"
+        }
+    }
+}
+
 public struct CompressionOptions {
     public var format: ArchiveFormat = .sevenZip
     public var level: Int = 5
@@ -155,6 +179,13 @@ public struct CompressionOptions {
     public var excludeResourceForks = false
     /// 压缩成功后删除源文件（7zz -sdel）。
     public var deleteAfterCompress = false
+    /// 压缩正被其他进程打开写入的共享文件（7zz -ssw）。
+    public var compressSharedFiles = false
+    /// 更新模式（7z/zip 有效）。
+    public var updateMode: UpdateMode = .add
+    /// 归档内路径：true = 相对路径名（含顶层名称）；false = 去除顶层文件夹，
+    /// 文件夹以其内容（"./name/*"）加入。
+    public var keepTopName = true
     public var password = ""
     /// 压缩方法（"" = 引擎默认）。7z: LZMA2/LZMA/PPMd/BZip2/Copy；zip: Deflate/BZip2/LZMA/PPMd/Copy。
     public var method = ""
@@ -162,8 +193,8 @@ public struct CompressionOptions {
     public var dictionaryMB = 0
     /// LZMA 系词长（0 = 引擎默认）。
     public var wordSize = 0
-    /// 7z 固实块（Solid Block）。
-    public var solidBlock = true
+    /// 7z 固实块：-1 = 完全固实（-ms=on），0 = 非固实（-ms=off），>0 = 块大小 MB（-ms=Nm）。
+    public var solidBlockMB = -1
     /// ZIP 加密方法：AES256 / ZipCrypto。
     public var zipEncryption = "AES256"
     /// 透传给 7zz 的额外参数（空格分隔），高级用户专用。
@@ -178,6 +209,28 @@ public struct CompressionOptions {
         case .zip: return ["", "Deflate", "BZip2", "LZMA", "PPMd", "Copy"]
         case .tar: return [""]
         }
+    }
+
+    /// 压缩级别显示名（对齐 7-Zip 命名）。
+    public static func levelTitle(_ level: Int) -> String {
+        switch level {
+        case 0: return "0 - 仅存储"
+        case 1: return "1 - 最快"
+        case 3: return "3 - 快速"
+        case 5: return "5 - 标准"
+        case 7: return "7 - 最大"
+        case 9: return "9 - 极限"
+        default: return "\(level)"
+        }
+    }
+
+    /// 固实块可选值（MB；-1 = 完全固实，0 = 非固实）。
+    public static let solidBlockChoices: [Int] = [-1, 0, 1, 8, 64, 256, 1024, 4096, 8192]
+
+    public static func solidBlockTitle(_ mb: Int) -> String {
+        if mb < 0 { return "完全固实" }
+        if mb == 0 { return "非固实" }
+        return mb >= 1024 ? "\(mb / 1024) GB" : "\(mb) MB"
     }
 }
 
@@ -247,6 +300,7 @@ public enum ArchiveCommands {
         if options.format != .tar {
             args += ["-mx\(options.level)"]
             if options.threads > 0 { args += ["-mmt\(options.threads)"] }
+            args += [options.updateMode.switchValue]
             let method = options.method.isEmpty
                 ? (options.format == .sevenZip ? "LZMA2" : "Deflate") : options.method
             args += [options.format == .sevenZip ? "-m0=\(method)" : "-mm=\(method)"]
@@ -255,8 +309,12 @@ public enum ArchiveCommands {
                 args += ["-md\(options.dictionaryMB)m"]
             }
             if options.wordSize > 0, lzmaFamily { args += ["-mfb\(options.wordSize)"] }
-            if options.format == .sevenZip { args += [options.solidBlock ? "-ms=on" : "-ms=off"] }
+            if options.format == .sevenZip {
+                args += [options.solidBlockMB < 0 ? "-ms=on"
+                         : options.solidBlockMB == 0 ? "-ms=off" : "-ms=\(options.solidBlockMB)m"]
+            }
         }
+        if options.compressSharedFiles { args += ["-ssw"] }
         if options.volumeMB > 0 { args += ["-v\(options.volumeMB)m"] }
         if options.excludeMacMetadata { args += ["-xr!__MACOSX", "-xr!.DS_Store"] }
         if options.excludeResourceForks { args += ["-xr!._*"] }
@@ -272,7 +330,15 @@ public enum ArchiveCommands {
         args += options.extraParams.split(separator: " ").map(String.init)
         args.append(archive.path)
         args.append("--")
-        args += sources.map { "./" + $0.lastPathComponent }
+        args += sources.map { source -> String in
+            // keepTopName=false：文件夹以 "./name/*" 加入，去除顶层目录名
+            // （代价：空文件夹无法随通配符进入归档）。
+            let name = "./" + source.lastPathComponent
+            if options.keepTopName { return name }
+            var isDir: ObjCBool = false
+            let dir = FileManager.default.fileExists(atPath: source.path, isDirectory: &isDir)
+            return (dir && isDir.boolValue) ? name + "/*" : name
+        }
         return ArchiveInvocation(args, directory: parent, password: password)
     }
 
