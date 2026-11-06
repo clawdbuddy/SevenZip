@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 手工 .appex 构建管线（SwiftPM 不支持构建应用扩展，改用 swiftc 直接编译打包）。
 # 用法：bash scripts/build-extensions.sh [app_bundle_path]
-# 产物：<app>/Contents/PlugIns/SevenZipQuickLook.appex 与 SevenZipFinderSync.appex
+# 产物：SevenZipQuickLook / SevenZipFinderSync / SevenZipQAExtract / SevenZipQACompress
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -35,8 +35,8 @@ sign_item() {  # sign_item <路径> <entitlements|->
 
 mkdir -p "$app_root/Contents/PlugIns"
 
-build_appex() {  # build_appex <名称> <模块名> <源码目录> <entitlements> [额外 .swift ...]
-    local name="$1" module="$2" src_dir="$3" entitlements="$4"
+build_appex() {  # build_appex <名称> <模块名> <plist目录> <entitlements> <源码 .swift ...>
+    local name="$1" module="$2" plist_dir="$3" entitlements="$4"
     shift 4
     local appex="$app_root/Contents/PlugIns/$name.appex"
     echo "  构建 $name.appex"
@@ -47,9 +47,9 @@ build_appex() {  # build_appex <名称> <模块名> <源码目录> <entitlements
     swiftc -O -parse-as-library -sdk "$sdk" -target "$target" -module-name "$module" \
         -Xlinker -e -Xlinker _NSExtensionMain \
         -framework Foundation -framework AppKit -framework Quartz -framework FinderSync \
-        "$src_dir"/*.swift "$@" \
+        "$@" \
         -o "$appex/Contents/MacOS/$name"
-    cp "$src_dir/Info.plist" "$appex/Contents/Info.plist"
+    cp "$plist_dir/Info.plist" "$appex/Contents/Info.plist"
     # macOS 26+ 的 pkd 强制要求扩展带 app-sandbox entitlement，否则拒绝注册。
     sign_item "$appex/Contents/MacOS/$name" "$entitlements"
     sign_item "$appex" "$entitlements"
@@ -61,6 +61,7 @@ build_appex() {  # build_appex <名称> <模块名> <源码目录> <entitlements
 build_appex SevenZipQuickLook SevenZipQuickLook \
     "$project_root/Extensions/QuickLookPreview" \
     "$project_root/Extensions/QuickLookPreview/Entitlements.plist" \
+    "$project_root/Extensions/QuickLookPreview/Provider.swift" \
     "$project_root/Sources/ArchiveCore/ArchiveCore.swift"
 ql_appex="$app_root/Contents/PlugIns/SevenZipQuickLook.appex"
 if [[ -x "$engine" ]]; then
@@ -78,6 +79,19 @@ fi
 # Finder Sync：右键一级菜单（打开 / 解压到当前目录 / 压缩所选项目）。
 build_appex SevenZipFinderSync SevenZipFinderSync \
     "$project_root/Extensions/FinderSync" \
-    "$project_root/Extensions/FinderSync/Entitlements.plist"
+    "$project_root/Extensions/FinderSync/Entitlements.plist" \
+    "$project_root/Extensions/FinderSync/ArchiveFinderSync.swift"
+
+# Quick Action（Finder 预览面板/「快速操作」子菜单/Touch Bar）：
+# 同一控制器源码构建两个 appex，行为由各自 Info.plist 的
+# QACommandHost / QACommandFormat 决定。
+build_appex SevenZipQAExtract SevenZipQAExtract \
+    "$project_root/Extensions/QuickAction/Extract" \
+    "$project_root/Extensions/QuickAction/Extract/Entitlements.plist" \
+    "$project_root/Extensions/QuickAction/Controller.swift"
+build_appex SevenZipQACompress SevenZipQACompress \
+    "$project_root/Extensions/QuickAction/Compress" \
+    "$project_root/Extensions/QuickAction/Compress/Entitlements.plist" \
+    "$project_root/Extensions/QuickAction/Controller.swift"
 
 echo "扩展构建完成：$app_root/Contents/PlugIns"

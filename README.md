@@ -19,7 +19,8 @@
 - **旧编码 ZIP 中文乱码修复**：自动识别 GBK/GB18030 编码的旧式 ZIP（Windows 中文环境打包）,PUA 映射无损恢复文件名，列表、选择性解压、落地重命名全链路生效
 - **加密归档**：7z 文件名加密、ZIP AES-256；密码经 stdin 管道传递，不出现在命令行参数、环境变量或日志中；列表失败后自动弹出密码重试
 - **Finder 深度集成**:右键一级菜单（Finder Sync 扩展：用七压打开 / 解压到当前目录 / 压缩所选项目）+ 服务菜单；应用内「工具 → 文件类型关联」复选框面板，可绑定/移除各格式的默认打开方式；关联后 Finder 中各格式显示专属文档图标
-- **Quick Look 空格预览**：选中压缩包按空格即显示内容清单（名称/大小/压缩后/修改时间，含 GBK 乱码恢复）
+- **Quick Look 空格预览**：选中压缩包按空格即显示摘要行（格式·压缩方法·Solid·文件数·原始→物理大小与压缩率）与可展开树形清单（含 GBK 乱码恢复）；2 秒/1 万条目截断保护，加密归档明确提示
+- **Finder 快速操作**：预览面板与右键「快速操作」中的「用七压解压」「用七压压缩」（Touch Bar 同显）
 - **解压对话框**：目标目录记忆与浏览、同名子文件夹、路径模式（完整路径/平铺）、消除根目录重复、覆盖模式、密码输入（可显示明文）
 - **属性面板**：归档总计（条目数/原始大小/压缩后/压缩率）+ 单条目 CRC、压缩方法、属性、加密标记
 - **专业选项**：压缩级别、CPU 线程、分卷、macOS 元数据排除；批量压缩/解压队列、格式转换、多算法校验和（CRC32/CRC64/SHA-1/SHA-256/SHA-512/BLAKE2sp）；浅色/深色/跟随系统外观；列表网格线开关
@@ -92,8 +93,9 @@ read -s P; printf '%s\n' "$P" | SevenZipCLI test encrypted.7z --password-stdin
 | `Sources/ArchiveCore/` | GUI/CLI 共用：命令构造、路径安全检查、列表解析、旧编码文件名恢复 |
 | `Sources/SevenZip/` | SwiftUI 文件管理器（双窗格外壳 ContentView + 窗格实现 PaneView）、NSTableView/NSCollectionView 列表、后台任务队列、Finder 服务入口 |
 | `Sources/SevenZipCLI/` | 命令行入口 |
-| `Extensions/QuickLookPreview/` | Quick Look 空格预览扩展（沙箱，内嵌 7zz 引擎） |
+| `Extensions/QuickLookPreview/` | Quick Look 空格预览扩展（沙箱，内嵌 7zz 引擎；摘要行 + 树形清单） |
 | `Extensions/FinderSync/` | Finder Sync 右键菜单扩展 |
+| `Extensions/QuickAction/` | Finder 快速操作扩展（解压/压缩两个 appex，共用控制器） |
 | `Resources/` | Info.plist、应用图标、各格式 Finder 文档图标（TypeIcons/)、双语应用名 |
 | `scripts/build-macos.sh` | 一键构建：7zz 引擎 + 应用 + 扩展 + 打包 + 签名 |
 | `scripts/build-extensions.sh` | 手工 .appex 管线：swiftc 编译（`-parse-as-library` + `_NSExtensionMain` 入口）+ 沙箱签名 |

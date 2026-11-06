@@ -264,6 +264,36 @@ public enum ArchiveCommands {
 }
 
 public enum ArchiveListing {
+    /// `7zz l -slt` 输出中「----------」之前的归档级字段（Quick Look 摘要行用）。
+    public struct Summary {
+        public var type = ""
+        public var method = ""
+        public var solid = false
+        public var multivolume = false
+        public var physicalSize: Int64?
+        public init() {}
+    }
+
+    public static func parseSummary(_ text: String) -> Summary {
+        var summary = Summary()
+        for line in text.components(separatedBy: .newlines) {
+            let clean = line.trimmingCharacters(in: .newlines)
+            if clean.hasPrefix("----------") { break }
+            guard let range = clean.range(of: " = ") else { continue }
+            let key = String(clean[..<range.lowerBound])
+            let value = String(clean[range.upperBound...])
+            switch key {
+            case "Type": summary.type = value
+            case "Method": summary.method = value
+            case "Solid": summary.solid = value == "+"
+            case "Multivolume": summary.multivolume = value == "+"
+            case "Physical Size": summary.physicalSize = Int64(value)
+            default: break
+            }
+        }
+        return summary
+    }
+
     public static func parse(_ text: String) -> [ArchiveEntry] {
         var entries: [ArchiveEntry] = []
         var insideEntries = false

@@ -13,6 +13,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             UpdateChecker.checkInBackground()
         }
+        // 替换 app 后立即启动时，系统可能尚未注册内置扩展（Finder 菜单/Quick Look/
+        // 快速操作消失）：延迟几秒复查，未注册则手工补注册（对齐参考项目 1.2.1 的修复）。
+        Task.detached(priority: .utility) {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            Self.reregisterMissingExtensions()
+        }
+    }
+
+    /// 遍历 Contents/PlugIns 下的 appex，pluginkit 查不到的重新注册。
+    private nonisolated static func reregisterMissingExtensions() {
+        let plugIns = Bundle.main.builtInPlugInsURL
+        guard let appexes = try? FileManager.default.contentsOfDirectory(
+            at: plugIns ?? URL(fileURLWithPath: "/"), includingPropertiesForKeys: nil
+        ).filter({ $0.pathExtension == "appex" }) else { return }
+        let pluginkit = URL(fileURLWithPath: "/usr/bin/pluginkit")
+        for appex in appexes {
+            guard let id = Bundle(url: appex)?.bundleIdentifier else { continue }
+            guard let check = try? SpawnedProcess.launch(
+                executable: pluginkit, arguments: ["-mAD", "-i", id],
+                directory: nil, environment: [:]) else { continue }
+            let found = String(decoding: check.stdoutRead.readDataToEndOfFile(), as: UTF8.self)
+            _ = check.waitForExit()
+            guard found.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            if let add = try? SpawnedProcess.launch(
+                executable: pluginkit, arguments: ["-a", appex.path],
+                directory: nil, environment: [:]) {
+                _ = add.waitForExit()
+            }
+        }
     }
 
     /// Finder 双击已注册的归档类型时由 LaunchServices 投递。
