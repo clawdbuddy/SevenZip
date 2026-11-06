@@ -1,10 +1,9 @@
 import AppKit
 import FinderSync
 
-/// Finder 右键一级菜单（七压 SevenZip 子菜单），全量对齐 Windows 7-Zip 右键菜单：
+/// Finder 右键一级菜单（七压 SevenZip 子菜单）：
 /// 归档：使用七压打开 / 解压到… / 解压到当前目录 / 解压到 "名称/" / 测试压缩包
-/// 任意：添加到压缩包… / 压缩并邮件… / 添加到 "名称.7z" / 压缩为 "名称.7z" 并邮件 /
-///       添加到 "名称.zip" / 压缩为 "名称.zip" 并邮件 / CRC SHA 子菜单
+/// 任意：添加到压缩包… / 压缩并邮件… / CRC SHA 子菜单
 /// 所有操作经 sevenzip:// URL scheme 回传主程序（AppDelegate → AppActions 路由）。
 /// 用户需在 系统设置 → 隐私与安全性 → 扩展 → Finder 中勾选启用（macOS 强制）。
 final class ArchiveFinderSync: FIFinderSync {
@@ -42,10 +41,6 @@ final class ArchiveFinderSync: FIFinderSync {
         // 压缩与邮件（任意文件/文件夹）。
         addItem(to: menu, title: "添加到压缩包…", action: #selector(addToArchiveDialog))
         addItem(to: menu, title: "压缩并邮件…", action: #selector(compressAndEmailDialog))
-        addItem(to: menu, title: "添加到 \"\(base).7z\"", action: #selector(addTo7z))
-        addItem(to: menu, title: "压缩为 \"\(base).7z\" 并邮件", action: #selector(compress7zAndEmail))
-        addItem(to: menu, title: "添加到 \"\(base).zip\"", action: #selector(addToZip))
-        addItem(to: menu, title: "压缩为 \"\(base).zip\" 并邮件", action: #selector(compressZipAndEmail))
         menu.addItem(.separator())
 
         // CRC SHA 子菜单。
@@ -114,10 +109,6 @@ final class ArchiveFinderSync: FIFinderSync {
     @objc private func testArchive() { sendCommand(host: "test") }
     @objc private func addToArchiveDialog() { sendCommand(host: "add-dialog") }
     @objc private func compressAndEmailDialog() { sendCommand(host: "compress-email-dialog") }
-    @objc private func addTo7z() { sendCommand(host: "compress", extra: [URLQueryItem(name: "format", value: "7z")]) }
-    @objc private func addToZip() { sendCommand(host: "compress", extra: [URLQueryItem(name: "format", value: "zip")]) }
-    @objc private func compress7zAndEmail() { sendCommand(host: "compress-email", extra: [URLQueryItem(name: "format", value: "7z")]) }
-    @objc private func compressZipAndEmail() { sendCommand(host: "compress-email", extra: [URLQueryItem(name: "format", value: "zip")]) }
 
     @objc private func checksum(_ sender: NSMenuItem) {
         guard let algo = sender.representedObject as? String else { return }
