@@ -56,6 +56,29 @@ final class AppActions: ObservableObject {
         didSet { UserDefaults.standard.set(flatView, forKey: "flatView") }
     }
 
+    /// 文件列表网格线（对标参考项目 Options → macOS 的「Show grid lines」）。
+    @Published var showGridLines = UserDefaults.standard.bool(forKey: "showGridLines") {
+        didSet { UserDefaults.standard.set(showGridLines, forKey: "showGridLines") }
+    }
+
+    /// 启动时检查更新（默认开启；对标「Check for updates at startup」）。
+    @Published var checkUpdates = UserDefaults.standard.object(forKey: "checkUpdates") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(checkUpdates, forKey: "checkUpdates") }
+    }
+
+    /// 重置所有设置（对标「Reset All Settings…」）：清空本应用的 UserDefaults
+    /// 域并把内存中的选项复位。窗口布局等 SwiftUI 自管状态在重启后复原。
+    func resetAllSettings() {
+        if let id = Bundle.main.bundleIdentifier {
+            UserDefaults.standard.removePersistentDomain(forName: id)
+        }
+        viewMode = .list
+        flatView = false
+        appearance = .system
+        showGridLines = false
+        checkUpdates = true
+    }
+
     /// 外观主题：system / light / dark，作用于整个 app 的 NSApp.appearance。
     enum Appearance: String, CaseIterable, Identifiable {
         case system, light, dark

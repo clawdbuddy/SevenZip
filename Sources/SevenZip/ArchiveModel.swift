@@ -23,10 +23,19 @@ final class ArchiveModel: ObservableObject {
     private var activeRunID: UUID?
     private var previewFolders: [URL] = []
 
+    /// 解压完成后的收尾信息：落地目录、旧编码文件名修复表、可选的根目录去重。
+    private struct ExtractCompletion {
+        let destination: URL
+        let restoreMap: [String: String]
+        /// 非空时：解压后若目标目录下只剩该同名根目录，把其内容上移一层
+        /// （对应 7-Zip「Eliminate duplication of root folder」）。
+        var eliminateRoot: String? = nil
+    }
+
     private enum Completion {
-        case listing(URL), created(URL), createdForEmail(URL), batchCreated(URL), extracted(URL, [String: String]), preview(URL, String, [String: String]),
+        case listing(URL), created(URL), createdForEmail(URL), batchCreated(URL), extracted(ExtractCompletion), preview(URL, String, [String: String]),
              nested(URL, String, [String: String]),
-             batchPreflight(URL, URL, ConflictPolicy, String?),
+             batchPreflight(URL, URL, ConflictPolicy, String?, ExtractPathMode),
              conversionExtracted(URL, URL, ArchiveFormat, String?), converted(URL, URL), tested(URL?), edited(URL), hash
     }
 
@@ -68,7 +77,8 @@ final class ArchiveModel: ObservableObject {
     }
 
     func extract(to directory: URL, paths: [String] = [],
-                 conflict: ConflictPolicy = .skip, password: String? = nil) {
+                 conflict: ConflictPolicy = .skip, password: String? = nil,
+                 pathMode: ExtractPathMode = .full, eliminateRoot: String? = nil) {
         guard let url = archiveURL else { return }
         guard listingComplete else { report("归档清单尚未完整读取，拒绝解压。") ; return }
         guard entries.allSatisfy({ ArchivePath.isSafe($0.path) }) else {
@@ -78,8 +88,12 @@ final class ArchiveModel: ObservableObject {
         do {
             let targets = enginePaths(for: expandedPaths(paths))
             let command = try ArchiveCommands.extract(url, to: directory, paths: targets,
-                                                      conflict: conflict, password: password)
-            enqueue(command, completion: .extracted(directory, ArchiveListing.legacyNameRestoreMap(entries)))
+                                                      conflict: conflict, password: password,
+                                                      pathMode: pathMode)
+            let map = ArchiveListing.legacyNameRestoreMap(entries, flat: pathMode == .flat)
+            enqueue(command, completion: .extracted(ExtractCompletion(
+                destination: directory, restoreMap: map,
+                eliminateRoot: pathMode == .full ? eliminateRoot : nil)))
         } catch { report(error.localizedDescription) }
     }
 
@@ -98,7 +112,7 @@ final class ArchiveModel: ObservableObject {
             do {
                 try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
                 let list = ArchiveCommands.list(archive, password: password)
-                enqueue(list, completion: .batchPreflight(archive, target, conflict, password))
+                enqueue(list, completion: .batchPreflight(archive, target, conflict, password, .full))
             } catch { report(error.localizedDescription); return }
         }
     }
@@ -136,13 +150,14 @@ final class ArchiveModel: ObservableObject {
     /// 解压任意归档到精确目录（无需先在界面打开）：先列清单做路径安全检查，再解压。
     /// Extract Here = 归档所在目录；Extract to "名称/" = 同名子目录。
     func extractArchive(_ archive: URL, to destination: URL, createDirectory: Bool,
-                        conflict: ConflictPolicy = .skip, password: String? = nil) {
+                        conflict: ConflictPolicy = .skip, password: String? = nil,
+                        pathMode: ExtractPathMode = .full) {
         do {
             if createDirectory {
                 try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
             }
             let list = ArchiveCommands.list(archive, password: password)
-            enqueue(list, completion: .batchPreflight(archive, destination, conflict, password))
+            enqueue(list, completion: .batchPreflight(archive, destination, conflict, password, pathMode))
         } catch { report(error.localizedDescription) }
     }
 
@@ -324,6 +339,22 @@ final class ArchiveModel: ObservableObject {
         }
     }
 
+    /// 「消除根目录重复」：解压到「名称/」后，若归档自身还包着一层同名根目录
+    /// （得到 名称/名称/…），把内层内容上移并移除空壳。仅在目标目录下仅此一个
+    /// 同名文件夹时触发，避免误伤正常内容。
+    private func eliminateDuplicateRoot(in directory: URL, rootName: String) {
+        let fm = FileManager.default
+        guard let contents = try? fm.contentsOfDirectory(atPath: directory.path),
+              contents == [rootName] else { return }
+        let root = directory.appendingPathComponent(rootName, isDirectory: true)
+        guard let children = try? fm.contentsOfDirectory(atPath: root.path) else { return }
+        for child in children {
+            try? fm.moveItem(at: root.appendingPathComponent(child),
+                             to: directory.appendingPathComponent(child))
+        }
+        try? fm.removeItem(at: root)
+    }
+
     private func enqueue(_ invocation: ArchiveInvocation, completion: Completion) {
         pending.append(Job(invocation: invocation, completion: completion))
         queueCount = pending.count
@@ -452,10 +483,13 @@ final class ArchiveModel: ObservableObject {
             }
         case .batchCreated(let archive):
             status = "批量归档已创建：\(archive.lastPathComponent)"
-        case .extracted(let destination, let restoreMap):
-            restoreRecoveredNames(in: destination, map: restoreMap)
-            status = "已解压到 \(destination.path)"
-        case .batchPreflight(let archive, let target, let conflict, let password):
+        case .extracted(let completion):
+            restoreRecoveredNames(in: completion.destination, map: completion.restoreMap)
+            if let root = completion.eliminateRoot {
+                eliminateDuplicateRoot(in: completion.destination, rootName: root)
+            }
+            status = "已解压到 \(completion.destination.path)"
+        case .batchPreflight(let archive, let target, let conflict, let password, let pathMode):
             guard !truncated else { report("批量解压安全检查中止：清单被截断。") ; return }
             var paths = ArchiveListing.parse(text)
             if archive.pathExtension.lowercased() == "zip" {
@@ -469,8 +503,10 @@ final class ArchiveModel: ObservableObject {
             }
             do {
                 let command = try ArchiveCommands.extract(archive, to: target,
-                                                          conflict: conflict, password: password)
-                enqueue(command, completion: .extracted(target, ArchiveListing.legacyNameRestoreMap(paths)))
+                                                          conflict: conflict, password: password,
+                                                          pathMode: pathMode)
+                let map = ArchiveListing.legacyNameRestoreMap(paths, flat: pathMode == .flat)
+                enqueue(command, completion: .extracted(ExtractCompletion(destination: target, restoreMap: map)))
             } catch { report(error.localizedDescription) }
         case .preview(let folder, let displayPath, let restoreMap):
             restoreRecoveredNames(in: folder, map: restoreMap)

@@ -1,9 +1,21 @@
+import AppKit
 import SwiftUI
 
 @main
 struct SevenZipApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var actions = AppActions.shared
+
+    private func confirmResetSettings() {
+        let alert = NSAlert()
+        alert.messageText = "重置所有设置？"
+        alert.informativeText = "视图模式、外观、网格线、双窗格等偏好将恢复默认；窗口布局在重启后复原。"
+        alert.addButton(withTitle: "重置")
+        alert.addButton(withTitle: "取消")
+        if alert.runModal() == .alertFirstButtonReturn {
+            actions.resetAllSettings()
+        }
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -62,6 +74,7 @@ struct SevenZipApp: App {
                         Text(option.title).tag(option)
                     }
                 }
+                Toggle("显示网格线", isOn: $actions.showGridLines)
                 Divider()
                 Button("运行日志") { actions.toggleLog() }
                     .keyboardShortcut("l")
@@ -81,10 +94,17 @@ struct SevenZipApp: App {
                 }
                 Button("输入压缩包密码…") { actions.enterPassword() }
                 Divider()
+                Button("性能测试（Benchmark）…") { BenchmarkWindowController.shared.show() }
+                Divider()
                 Button("文件类型关联…") { actions.fileAssociation() }
             }
             // 7zFM: 帮助(H)
             CommandGroup(replacing: .help) {
+                Button("检查更新…") { UpdateChecker.check(manual: true) }
+                Toggle("启动时检查更新", isOn: $actions.checkUpdates)
+                Divider()
+                Button("重置所有设置…") { confirmResetSettings() }
+                Divider()
                 Button("关于七压") { actions.about() }
             }
         }

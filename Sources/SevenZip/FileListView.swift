@@ -39,6 +39,8 @@ struct FileListView: NSViewRepresentable {
     var onSortChange: ([NSSortDescriptor]) -> Void = { _ in }
     /// 用户与列表发生交互（点击/选择/双击）时回调，双窗格模式下用于切换焦点。
     var onInteraction: () -> Void = {}
+    /// 显示网格线（参考 7-Zip Options → Show grid lines）。
+    var gridLines: Bool = false
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -86,6 +88,7 @@ struct FileListView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let table = context.coordinator.table else { return }
+        table.gridStyleMask = gridLines ? [.solidHorizontalGridLineMask, .solidVerticalGridLineMask] : []
         table.reloadData()
         let indexes = rows.indices.filter { selection.contains(rows[$0].id) }
         table.selectRowIndexes(IndexSet(indexes), byExtendingSelection: false)

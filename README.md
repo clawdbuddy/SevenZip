@@ -18,9 +18,12 @@
 - **全格式支持**：7z / ZIP / RAR / TAR / GZ / XZ 的浏览、解压、测试；7z / ZIP / TAR 的创建与修改（添加、删除、重命名条目）
 - **旧编码 ZIP 中文乱码修复**：自动识别 GBK/GB18030 编码的旧式 ZIP（Windows 中文环境打包）,PUA 映射无损恢复文件名，列表、选择性解压、落地重命名全链路生效
 - **加密归档**：7z 文件名加密、ZIP AES-256；密码经 stdin 管道传递，不出现在命令行参数、环境变量或日志中；列表失败后自动弹出密码重试
-- **Finder 深度集成**:右键一级菜单（Finder Sync 扩展：用七压打开 / 解压到当前目录 / 压缩所选项目）+ 服务菜单；应用内「工具 → 文件类型关联」复选框面板，可绑定/移除各格式的默认打开方式
+- **Finder 深度集成**:右键一级菜单（Finder Sync 扩展：用七压打开 / 解压到当前目录 / 压缩所选项目）+ 服务菜单；应用内「工具 → 文件类型关联」复选框面板，可绑定/移除各格式的默认打开方式；关联后 Finder 中各格式显示专属文档图标
 - **Quick Look 空格预览**：选中压缩包按空格即显示内容清单（名称/大小/压缩后/修改时间，含 GBK 乱码恢复）
-- **专业选项**：压缩级别、CPU 线程、分卷、macOS 元数据排除；批量压缩/解压队列、格式转换、多算法校验和（CRC32/CRC64/SHA-1/SHA-256/SHA-512/BLAKE2sp）；浅色/深色/跟随系统外观
+- **解压对话框**：目标目录记忆与浏览、同名子文件夹、路径模式（完整路径/平铺）、消除根目录重复、覆盖模式、密码输入（可显示明文）
+- **属性面板**：归档总计（条目数/原始大小/压缩后/压缩率）+ 单条目 CRC、压缩方法、属性、加密标记
+- **专业选项**：压缩级别、CPU 线程、分卷、macOS 元数据排除；批量压缩/解压队列、格式转换、多算法校验和（CRC32/CRC64/SHA-1/SHA-256/SHA-512/BLAKE2sp）；浅色/深色/跟随系统外观；列表网格线开关
+- **工具**：性能测试 Benchmark（`7zz b` 实时输出 + 总评分）、启动时检查更新（可关闭）、重置所有设置
 - **命令行**：应用内附 `SevenZipCLI`，与 GUI 共用同一套命令构造逻辑，适合脚本自动化
 
 ## 系统要求
@@ -72,6 +75,8 @@ NOTARY_PROFILE="my-notary-profile" bash scripts/build-macos.sh
 
 **双窗格与快捷键**：`F9` 开关双窗格，`Tab` 切换焦点窗格，`F5`/`F6` 跨窗格复制/移动，`⌘R` 刷新，`⌘↑` 返回上级，`⌘L` 运行日志。
 
+**其他工具**：`工具 → 性能测试（Benchmark）` 跑 `7zz b` 查看压缩/解压评分；`帮助 → 检查更新` 对比 GitHub Releases；`帮助 → 重置所有设置` 恢复默认偏好；`查看 → 显示网格线` 切换列表网格线。
+
 **命令行**:
 
 ```bash
@@ -89,10 +94,10 @@ read -s P; printf '%s\n' "$P" | SevenZipCLI test encrypted.7z --password-stdin
 | `Sources/SevenZipCLI/` | 命令行入口 |
 | `Extensions/QuickLookPreview/` | Quick Look 空格预览扩展（沙箱，内嵌 7zz 引擎） |
 | `Extensions/FinderSync/` | Finder Sync 右键菜单扩展 |
-| `Resources/` | Info.plist、应用图标、双语应用名 |
+| `Resources/` | Info.plist、应用图标、各格式 Finder 文档图标（TypeIcons/)、双语应用名 |
 | `scripts/build-macos.sh` | 一键构建：7zz 引擎 + 应用 + 扩展 + 打包 + 签名 |
 | `scripts/build-extensions.sh` | 手工 .appex 管线：swiftc 编译（`-parse-as-library` + `_NSExtensionMain` 入口）+ 沙箱签名 |
-| `scripts/make-icon.swift` | 程序化生成应用图标（iconset → icns) |
+| `scripts/make-icon.swift` · `make-type-icons.swift` | 程序化生成应用图标与类型图标（iconset → icns) |
 | `scripts/check-engine.sh` · `tests/check-advanced-engine.sh` | 引擎端到端测试 |
 | `Tests/ArchiveCoreTests/` | XCTest 单元测试（需完整 Xcode) |
 | `third_party/7z2605-src.tar.xz` | 7-Zip 26.05 官方源码包（SHA-256 校验） |

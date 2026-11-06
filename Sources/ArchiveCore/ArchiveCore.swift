@@ -12,6 +12,11 @@ public struct ArchiveEntry: Identifiable, Hashable {
     public let packedSize: Int64?
     public let modified: String
     public let isDirectory: Bool
+    /// 属性面板扩展信息（来自 7zz l -slt 的对应字段，可能为空）。
+    public let crc: String
+    public let method: String
+    public let attributes: String
+    public let encrypted: Bool
 
     public var id: String { path }
     public var sizeLabel: String {
@@ -26,13 +31,18 @@ public struct ArchiveEntry: Identifiable, Hashable {
     }
 
     public init(path: String, size: Int64?, modified: String, isDirectory: Bool, enginePath: String? = nil,
-                packedSize: Int64? = nil) {
+                packedSize: Int64? = nil, crc: String = "", method: String = "",
+                attributes: String = "", encrypted: Bool = false) {
         self.path = path
         self.enginePath = enginePath ?? path
         self.size = size
         self.packedSize = packedSize
         self.modified = modified
         self.isDirectory = isDirectory
+        self.crc = crc
+        self.method = method
+        self.attributes = attributes
+        self.encrypted = encrypted
     }
 }
 
@@ -111,6 +121,21 @@ public enum ConflictPolicy: String, CaseIterable, Identifiable {
         case .overwrite: return "-aoa"
         }
     }
+}
+
+public enum ExtractPathMode: String, CaseIterable, Identifiable {
+    /// x：保留归档内的目录结构。
+    case full
+    /// e：丢弃目录结构，所有文件平铺到目标目录（同名冲突按覆盖策略处理）。
+    case flat
+    public var id: String { rawValue }
+    public var title: String {
+        switch self {
+        case .full: return "完整路径"
+        case .flat: return "无路径（平铺）"
+        }
+    }
+    var command: String { self == .flat ? "e" : "x" }
 }
 
 public struct CompressionOptions {
@@ -206,9 +231,10 @@ public enum ArchiveCommands {
     }
 
     public static func extract(_ archive: URL, to destination: URL, paths: [String] = [],
-                               conflict: ConflictPolicy = .skip, password: String? = nil) throws -> ArchiveInvocation {
+                               conflict: ConflictPolicy = .skip, password: String? = nil,
+                               pathMode: ExtractPathMode = .full) throws -> ArchiveInvocation {
         for path in paths where !ArchivePath.isSafe(path) { throw ArchiveCommandError.unsafePath(path) }
-        var args = ["x", conflict.switchValue, "-y", "-bsp1", "-spd", "-o\(destination.path)", archive.path]
+        var args = [pathMode.command, conflict.switchValue, "-y", "-bsp1", "-spd", "-o\(destination.path)", archive.path]
         if !paths.isEmpty { args += ["--"] + paths }
         return ArchiveInvocation(args, password: password)
     }
@@ -248,7 +274,11 @@ public enum ArchiveListing {
                                         size: fields["Size"].flatMap(Int64.init),
                                         modified: fields["Modified"] ?? "",
                                         isDirectory: fields["Folder"] == "+",
-                                        packedSize: fields["Packed Size"].flatMap(Int64.init)))
+                                        packedSize: fields["Packed Size"].flatMap(Int64.init),
+                                        crc: fields["CRC"] ?? "",
+                                        method: fields["Method"] ?? "",
+                                        attributes: fields["Attributes"] ?? "",
+                                        encrypted: fields["Encrypted"] == "+"))
         }
         for line in text.components(separatedBy: .newlines) {
             let clean = line.trimmingCharacters(in: .newlines)
@@ -275,16 +305,24 @@ public enum ArchiveListing {
             guard recovered != entry.path else { return entry }
             return ArchiveEntry(path: recovered, size: entry.size, modified: entry.modified,
                                 isDirectory: entry.isDirectory, enginePath: entry.path,
-                                packedSize: entry.packedSize)
+                                packedSize: entry.packedSize, crc: entry.crc, method: entry.method,
+                                attributes: entry.attributes, encrypted: entry.encrypted)
         }
     }
 
     /// engine-visible path → display path, for entries recovered by
     /// `recoveringLegacyZipNames`. Used to repair filenames after extraction.
-    public static func legacyNameRestoreMap(_ entries: [ArchiveEntry]) -> [String: String] {
+    /// `flat`（e 命令平铺解压）时键值都退化为文件本名——目录结构已被丢弃。
+    public static func legacyNameRestoreMap(_ entries: [ArchiveEntry], flat: Bool = false) -> [String: String] {
         var map: [String: String] = [:]
         for entry in entries where entry.enginePath != entry.path {
-            map[entry.enginePath] = entry.path
+            if flat {
+                let key = entry.enginePath.split(separator: "/").last.map(String.init) ?? entry.enginePath
+                let value = entry.path.split(separator: "/").last.map(String.init) ?? entry.path
+                if key != value { map[key] = value }
+            } else {
+                map[entry.enginePath] = entry.path
+            }
         }
         return map
     }

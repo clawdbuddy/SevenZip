@@ -122,6 +122,10 @@ cp "$cli_binary" "$app_root/Contents/MacOS/SevenZipCLI"
 cp "$engine" "$app_root/Contents/Resources/bin/7zz"
 cp "$project_root/Resources/Info.plist" "$app_root/Contents/Info.plist"
 cp "$project_root/Resources/AppIcon.icns" "$app_root/Contents/Resources/AppIcon.icns"
+# 各归档类型的 Finder 文档图标（由 scripts/make-type-icons.swift 预生成并提交）
+if [[ -d "$project_root/Resources/TypeIcons" ]]; then
+    cp "$project_root"/Resources/TypeIcons/*.icns "$app_root/Contents/Resources/"
+fi
 # 本地化应用名：英文 SevenZip / 中文 七压（Dock、菜单栏、Finder 显示）
 for lproj in "$project_root"/Resources/*.lproj; do
     lproj_name="$(basename "$lproj")"

@@ -8,6 +8,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = self
         Task { @MainActor in AppActions.shared.applyAppearanceOnLaunch() }
+        // 启动后延迟静默检查更新（可在 帮助 → 启动时检查更新 关闭）。
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            UpdateChecker.checkInBackground()
+        }
     }
 
     /// Finder 双击已注册的归档类型时由 LaunchServices 投递。

@@ -33,6 +33,17 @@ struct PaneView: View {
     /// 「压缩并邮件…」：压缩选项确认后，创建完成自动调出邮件分享。
     @State private var emailAfterCreate = false
     @State private var showCompressionSheet = false
+    // 解压对话框（对齐 7-Zip Extract 窗口：目标目录/子文件夹/路径模式/覆盖模式/密码）
+    @State private var showExtractionSheet = false
+    @State private var extractionPaths: [String] = []
+    @State private var extractionDest = ""
+    @State private var extractToSubfolder = true
+    @State private var extractSubfolderName = ""
+    @State private var extractPathMode: ExtractPathMode = .full
+    @State private var extractEliminateDup = false
+    @State private var extractConflict: ConflictPolicy = .skip
+    @State private var extractPassword = ""
+    @State private var showExtractPassword = false
     @State private var showDeleteConfirmation = false
     @State private var showRenameDialog = false
     @State private var renamedPath = ""
@@ -223,6 +234,7 @@ struct PaneView: View {
         .contentShape(Rectangle())
         .onTapGesture { if !isFocused { onFocus() } }
         .sheet(isPresented: $showCompressionSheet) { compressionSheet }
+        .sheet(isPresented: $showExtractionSheet) { extractionSheet }
         .sheet(isPresented: $showInfo) { infoSheet }
         .sheet(isPresented: $showAbout) { aboutSheet }
         .sheet(isPresented: $showAssociation) { AssociationSheet() }
@@ -393,7 +405,8 @@ struct PaneView: View {
                 FileListView(rows: rows, selection: $selected,
                              onActivate: activate, menuProvider: menuItems,
                              onSortChange: { sortDescriptors = $0 },
-                             onInteraction: { if !isFocused { onFocus() } })
+                             onInteraction: { if !isFocused { onFocus() } },
+                             gridLines: actions.showGridLines)
             }
         }
     }
@@ -537,6 +550,79 @@ struct PaneView: View {
         .frame(width: 510)
     }
 
+    /// 解压对话框：目标目录（可手输或浏览）、同名子文件夹、路径模式（完整/平铺）、
+    /// 消除根目录重复、覆盖模式、密码——对齐 7-Zip 的 Extract 窗口。
+    private var extractionSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("解压\(model.archiveURL.map { "：\($0.path)" } ?? "")")
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            HStack(spacing: 8) {
+                Text("解压到：")
+                TextField("目标目录", text: $extractionDest)
+                    .textFieldStyle(.roundedBorder)
+                Button("…") {
+                    if let chosen = chooseFolderPanel(title: "选择解压目标目录") {
+                        extractionDest = chosen.path
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                Toggle("", isOn: $extractToSubfolder).toggleStyle(.checkbox).labelsHidden()
+                TextField("子文件夹名称", text: $extractSubfolderName)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!extractToSubfolder)
+            }
+            Form {
+                Picker("路径模式", selection: $extractPathMode) {
+                    ForEach(ExtractPathMode.allCases) { mode in Text(mode.title).tag(mode) }
+                }
+                Toggle("消除根目录重复", isOn: $extractEliminateDup)
+                    .disabled(!extractToSubfolder || extractPathMode != .full)
+                Picker("覆盖模式", selection: $extractConflict) {
+                    ForEach(ConflictPolicy.allCases) { value in Text(value.title).tag(value) }
+                }
+            }
+            GroupBox("密码") {
+                HStack {
+                    if showExtractPassword {
+                        TextField("密码", text: $extractPassword)
+                    } else {
+                        SecureField("密码", text: $extractPassword)
+                    }
+                    Toggle("显示密码", isOn: $showExtractPassword)
+                }
+                .padding(6)
+            }
+            HStack {
+                Spacer()
+                Button("取消") { showExtractionSheet = false }
+                Button("确定") { performSheetExtraction() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(extractionDest.trimmingCharacters(in: .whitespaces).isEmpty
+                              || (extractToSubfolder && extractSubfolderName.isEmpty))
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+    }
+
+    private func performSheetExtraction() {
+        var destination = URL(fileURLWithPath: extractionDest)
+        var eliminate: String? = nil
+        if extractToSubfolder {
+            destination = destination.appendingPathComponent(extractSubfolderName, isDirectory: true)
+            if extractEliminateDup { eliminate = extractSubfolderName }
+        }
+        model.extract(to: destination, paths: extractionPaths, conflict: extractConflict,
+                      password: extractPassword.isEmpty ? nil : extractPassword,
+                      pathMode: extractPathMode, eliminateRoot: eliminate)
+        extractPassword = ""
+        showExtractionSheet = false
+    }
+
     private var infoSheet: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("属性信息").font(.title2)
@@ -548,12 +634,19 @@ struct PaneView: View {
                 let packed = model.entries.compactMap(\.packedSize).reduce(0, +)
                 infoRow("原始大小", ByteCountFormatter.string(fromByteCount: total, countStyle: .file))
                 infoRow("压缩后", ByteCountFormatter.string(fromByteCount: packed, countStyle: .file))
+                if total > 0 {
+                    infoRow("压缩率", String(format: "%.1f%%", Double(packed) / Double(total) * 100))
+                }
                 if let selectedEntry = singleSelectedEntry {
                     Divider()
                     infoRow("选中条目", selectedEntry.path)
                     infoRow("大小", selectedEntry.sizeLabel)
                     infoRow("压缩后", selectedEntry.packedLabel)
                     infoRow("修改时间", selectedEntry.modified)
+                    if !selectedEntry.method.isEmpty { infoRow("压缩方法", selectedEntry.method) }
+                    if !selectedEntry.crc.isEmpty { infoRow("CRC", selectedEntry.crc) }
+                    if !selectedEntry.attributes.isEmpty { infoRow("属性", selectedEntry.attributes) }
+                    infoRow("加密", selectedEntry.encrypted ? "是" : "否")
                 }
             } else if let url = singleSelectedURL {
                 let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .localizedTypeDescriptionKey])
@@ -889,7 +982,17 @@ struct PaneView: View {
     }
 
     private func extractAction() {
-        chooseDestination(paths: expandedArchiveSelection)
+        guard inArchive, let archive = model.archiveURL else { return }
+        extractionPaths = expandedArchiveSelection
+        extractionDest = archive.deletingLastPathComponent().path
+        extractSubfolderName = Self.baseName(for: [archive])
+        extractToSubfolder = true
+        extractPathMode = .full
+        extractEliminateDup = false
+        extractConflict = conflict
+        extractPassword = ""
+        showExtractPassword = false
+        showExtractionSheet = true
     }
 
     private func copyAction() {
