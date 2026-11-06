@@ -11,10 +11,18 @@ struct FileListRow: Identifiable, Hashable {
     let packedText: String
     let modified: String
     let isArchiveFile: Bool
+    /// 创建时间（本地文件与部分归档格式提供）。
+    var createdText = ""
+    /// 条目注释（归档格式支持时提供）。
+    var commentText = ""
+    /// 文件夹行：内部包含的子文件夹 / 文件数量（归档内即时统计）。
+    var subfoldersText = ""
+    var subfilesText = ""
     // 排序键（展示文本无法数值比较，单独携带）
     var sizeKey: Int64 = -1
     var packedKey: Int64 = -1
     var modifiedKey: String = ""   // ISO 风格字符串可直接字典序比较
+    var createdKey: String = ""
 }
 
 struct FileListMenuAction {
@@ -58,16 +66,20 @@ struct FileListView: NSViewRepresentable {
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
 
         let columns: [(String, String, CGFloat)] = [
-            ("name", "名称", 340),
-            ("size", "大小", 100),
-            ("packed", "压缩后", 100),
-            ("modified", "修改时间", 150),
+            ("name", "名称", 300),
+            ("size", "大小", 90),
+            ("packed", "压缩后", 90),
+            ("modified", "修改时间", 140),
+            ("created", "创建时间", 140),
+            ("comment", "注释", 110),
+            ("folders", "文件夹", 60),
+            ("files", "文件", 60),
         ]
         for (identifier, title, width) in columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
             column.title = title
             column.width = width
-            column.minWidth = 60
+            column.minWidth = 50
             column.sortDescriptorPrototype = NSSortDescriptor(key: identifier, ascending: true)
             table.addTableColumn(column)
         }
@@ -122,6 +134,18 @@ struct FileListView: NSViewRepresentable {
                 cell.imageView?.isHidden = true
             case "packed":
                 cell.textField?.stringValue = item.packedText
+                cell.imageView?.isHidden = true
+            case "created":
+                cell.textField?.stringValue = item.createdText
+                cell.imageView?.isHidden = true
+            case "comment":
+                cell.textField?.stringValue = item.commentText
+                cell.imageView?.isHidden = true
+            case "folders":
+                cell.textField?.stringValue = item.subfoldersText
+                cell.imageView?.isHidden = true
+            case "files":
+                cell.textField?.stringValue = item.subfilesText
                 cell.imageView?.isHidden = true
             default:
                 cell.textField?.stringValue = item.modified

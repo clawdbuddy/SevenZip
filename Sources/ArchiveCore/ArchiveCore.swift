@@ -17,6 +17,9 @@ public struct ArchiveEntry: Identifiable, Hashable {
     public let method: String
     public let attributes: String
     public let encrypted: Bool
+    /// 创建时间与注释（仅部分格式提供，通常为空）。
+    public let created: String
+    public let comment: String
 
     public var id: String { path }
     public var sizeLabel: String {
@@ -32,7 +35,8 @@ public struct ArchiveEntry: Identifiable, Hashable {
 
     public init(path: String, size: Int64?, modified: String, isDirectory: Bool, enginePath: String? = nil,
                 packedSize: Int64? = nil, crc: String = "", method: String = "",
-                attributes: String = "", encrypted: Bool = false) {
+                attributes: String = "", encrypted: Bool = false,
+                created: String = "", comment: String = "") {
         self.path = path
         self.enginePath = enginePath ?? path
         self.size = size
@@ -43,6 +47,8 @@ public struct ArchiveEntry: Identifiable, Hashable {
         self.method = method
         self.attributes = attributes
         self.encrypted = encrypted
+        self.created = created
+        self.comment = comment
     }
 }
 
@@ -145,9 +151,34 @@ public struct CompressionOptions {
     public var volumeMB: Int = 0
     public var encryptFileNames = true
     public var excludeMacMetadata = true
+    /// 排除 AppleDouble 资源叉文件（._*）——与 .DS_Store/__MACOSX 互补。
+    public var excludeResourceForks = false
+    /// 压缩成功后删除源文件（7zz -sdel）。
+    public var deleteAfterCompress = false
     public var password = ""
+    /// 压缩方法（"" = 引擎默认）。7z: LZMA2/LZMA/PPMd/BZip2/Copy；zip: Deflate/BZip2/LZMA/PPMd/Copy。
+    public var method = ""
+    /// LZMA 系字典大小（MB，0 = 引擎默认）。
+    public var dictionaryMB = 0
+    /// LZMA 系词长（0 = 引擎默认）。
+    public var wordSize = 0
+    /// 7z 固实块（Solid Block）。
+    public var solidBlock = true
+    /// ZIP 加密方法：AES256 / ZipCrypto。
+    public var zipEncryption = "AES256"
+    /// 透传给 7zz 的额外参数（空格分隔），高级用户专用。
+    public var extraParams = ""
 
     public init() {}
+
+    /// 各格式可选的压缩方法（首项 "" = 默认）。
+    public static func methodChoices(for format: ArchiveFormat) -> [String] {
+        switch format {
+        case .sevenZip: return ["", "LZMA2", "LZMA", "PPMd", "BZip2", "Copy"]
+        case .zip: return ["", "Deflate", "BZip2", "LZMA", "PPMd", "Copy"]
+        case .tar: return [""]
+        }
+    }
 }
 
 public struct ArchiveInvocation {
@@ -207,23 +238,38 @@ public enum ArchiveCommands {
         guard archive.pathExtension.lowercased() == options.format.rawValue else {
             throw ArchiveCommandError.formatMismatch
         }
-        guard (0...9).contains(options.level) && options.threads >= 0 && options.volumeMB >= 0 else {
+        guard (0...9).contains(options.level) && options.threads >= 0 && options.volumeMB >= 0,
+              (0...1024).contains(options.dictionaryMB),
+              options.wordSize == 0 || (8...273).contains(options.wordSize) else {
             throw ArchiveCommandError.invalidOptions
         }
         var args = ["a", "-t\(options.format.rawValue)", "-bsp1", "-y", "-sse"]
         if options.format != .tar {
             args += ["-mx\(options.level)"]
             if options.threads > 0 { args += ["-mmt\(options.threads)"] }
+            let method = options.method.isEmpty
+                ? (options.format == .sevenZip ? "LZMA2" : "Deflate") : options.method
+            args += [options.format == .sevenZip ? "-m0=\(method)" : "-mm=\(method)"]
+            let lzmaFamily = ["LZMA2", "LZMA"].contains(method)
+            if options.dictionaryMB > 0, lzmaFamily || method == "PPMd" {
+                args += ["-md\(options.dictionaryMB)m"]
+            }
+            if options.wordSize > 0, lzmaFamily { args += ["-mfb\(options.wordSize)"] }
+            if options.format == .sevenZip { args += [options.solidBlock ? "-ms=on" : "-ms=off"] }
         }
         if options.volumeMB > 0 { args += ["-v\(options.volumeMB)m"] }
         if options.excludeMacMetadata { args += ["-xr!__MACOSX", "-xr!.DS_Store"] }
+        if options.excludeResourceForks { args += ["-xr!._*"] }
+        if options.deleteAfterCompress { args += ["-sdel"] }
         let password = options.password.isEmpty ? nil : options.password
         if password != nil {
             guard options.format != .tar else { throw ArchiveCommandError.invalidOptions }
             args += ["-p"] // prompt, then read the password on stdin
             if options.format == .sevenZip && options.encryptFileNames { args += ["-mhe=on"] }
-            if options.format == .zip { args += ["-mem=AES256"] }
+            if options.format == .zip { args += ["-mem=\(options.zipEncryption)"] }
         }
+        // 高级自由参数：透传为开关，必须位于归档路径之前。
+        args += options.extraParams.split(separator: " ").map(String.init)
         args.append(archive.path)
         args.append("--")
         args += sources.map { "./" + $0.lastPathComponent }
@@ -308,7 +354,9 @@ public enum ArchiveListing {
                                         crc: fields["CRC"] ?? "",
                                         method: fields["Method"] ?? "",
                                         attributes: fields["Attributes"] ?? "",
-                                        encrypted: fields["Encrypted"] == "+"))
+                                        encrypted: fields["Encrypted"] == "+",
+                                        created: fields["Created"] ?? "",
+                                        comment: fields["Comment"] ?? ""))
         }
         for line in text.components(separatedBy: .newlines) {
             let clean = line.trimmingCharacters(in: .newlines)
@@ -336,7 +384,8 @@ public enum ArchiveListing {
             return ArchiveEntry(path: recovered, size: entry.size, modified: entry.modified,
                                 isDirectory: entry.isDirectory, enginePath: entry.path,
                                 packedSize: entry.packedSize, crc: entry.crc, method: entry.method,
-                                attributes: entry.attributes, encrypted: entry.encrypted)
+                                attributes: entry.attributes, encrypted: entry.encrypted,
+                                created: entry.created, comment: entry.comment)
         }
     }
 

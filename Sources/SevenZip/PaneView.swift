@@ -33,6 +33,8 @@ struct PaneView: View {
     /// 「压缩并邮件…」：压缩选项确认后，创建完成自动调出邮件分享。
     @State private var emailAfterCreate = false
     @State private var showCompressionSheet = false
+    @State private var showCompressPassword = false
+    @State private var passwordConfirm = ""
     // 解压对话框（对齐 7-Zip Extract 窗口：目标目录/子文件夹/路径模式/覆盖模式/密码）
     @State private var showExtractionSheet = false
     @State private var extractionPaths: [String] = []
@@ -91,6 +93,8 @@ struct PaneView: View {
                     : (lhs.packedKey < rhs.packedKey ? .orderedAscending : .orderedDescending)
             case "modified":
                 result = lhs.modifiedKey.compare(rhs.modifiedKey)
+            case "created":
+                result = lhs.createdKey.compare(rhs.createdKey)
             default:
                 result = lhs.name.localizedStandardCompare(rhs.name)
             }
@@ -111,9 +115,13 @@ struct PaneView: View {
                                       modified: "", isArchiveFile: false))
         }
         for file in dirFiles {
-            let values = try? file.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
+            let values = try? file.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey,
+                                                            .contentModificationDateKey, .creationDateKey])
             let isDirectory = values?.isDirectory == true
             let modified = values?.contentModificationDate.map {
+                $0.formatted(date: .numeric, time: .shortened)
+            } ?? ""
+            let created = values?.creationDate.map {
                 $0.formatted(date: .numeric, time: .shortened)
             } ?? ""
             let sizeText = isDirectory ? "文件夹"
@@ -124,6 +132,9 @@ struct PaneView: View {
                                   isArchiveFile: Self.archiveExtensions.contains(file.pathExtension.lowercased()))
             row.sizeKey = values?.fileSize.map { Int64($0) } ?? -1
             row.modifiedKey = values?.contentModificationDate
+                .map { String(format: "%020.3f", $0.timeIntervalSince1970) } ?? ""
+            row.createdText = created
+            row.createdKey = values?.creationDate
                 .map { String(format: "%020.3f", $0.timeIntervalSince1970) } ?? ""
             result.append(row)
         }
@@ -159,10 +170,16 @@ struct PaneView: View {
                 let name = String(rest.split(separator: "/", maxSplits: 1)[0])
                 if foldersSeen.insert(name).inserted {
                     let fullPath = prefix + name
-                    let modified = model.entries.first { $0.path == fullPath && $0.isDirectory }?.modified ?? ""
+                    let dirEntry = model.entries.first { $0.path == fullPath && $0.isDirectory }
                     var row = FileListRow(id: fullPath, kind: .folder, name: name, sizeText: "文件夹",
-                                          packedText: "", modified: modified, isArchiveFile: false)
-                    row.modifiedKey = modified
+                                          packedText: "", modified: dirEntry?.modified ?? "",
+                                          isArchiveFile: false)
+                    row.modifiedKey = row.modified
+                    row.createdText = dirEntry?.created ?? ""
+                    row.createdKey = row.createdText
+                    let counts = archiveChildCounts(of: fullPath)
+                    row.subfoldersText = "\(counts.folders)"
+                    row.subfilesText = "\(counts.files)"
                     folders.append(row)
                 }
             } else if entry.isDirectory {
@@ -170,6 +187,11 @@ struct PaneView: View {
                     var row = FileListRow(id: entry.path, kind: .folder, name: rest, sizeText: "文件夹",
                                           packedText: "", modified: entry.modified, isArchiveFile: false)
                     row.modifiedKey = entry.modified
+                    row.createdText = entry.created
+                    row.createdKey = entry.created
+                    let counts = archiveChildCounts(of: entry.path)
+                    row.subfoldersText = "\(counts.folders)"
+                    row.subfilesText = "\(counts.files)"
                     folders.append(row)
                 }
             } else {
@@ -188,7 +210,20 @@ struct PaneView: View {
         row.sizeKey = entry.size ?? -1
         row.packedKey = entry.packedSize ?? -1
         row.modifiedKey = entry.modified
+        row.createdText = entry.created
+        row.createdKey = entry.created
+        row.commentText = entry.comment
         return row
+    }
+
+    /// 统计归档内某文件夹（按路径前缀）递归包含的子文件夹与文件数量。
+    private func archiveChildCounts(of folderPath: String) -> (folders: Int, files: Int) {
+        let prefix = folderPath + "/"
+        var folders = 0, files = 0
+        for entry in model.entries where entry.path.hasPrefix(prefix) {
+            if entry.isDirectory { folders += 1 } else { files += 1 }
+        }
+        return (folders, files)
     }
 
     // MARK: - Address
@@ -477,7 +512,9 @@ struct PaneView: View {
     private var statusBar: some View {
         HStack(spacing: 12) {
             let files = rows.filter { $0.kind == .file }
-            Text("\(rows.filter { $0.kind != .up }.count) 个对象")
+            let total = rows.filter { $0.kind != .up }.count
+            let picked = actionableSelection.count
+            Text(picked > 0 ? "已选 \(picked) / 共 \(total) 个对象" : "\(total) 个对象")
             if inArchive, !files.isEmpty {
                 let ids = Set(files.map(\.id))
                 let total = model.entries.filter { ids.contains($0.path) }.compactMap(\.size).reduce(0, +)
@@ -520,34 +557,108 @@ struct PaneView: View {
 
     // MARK: - Sheets
 
+    private var passwordsMatch: Bool {
+        options.password.isEmpty || options.password == passwordConfirm
+    }
+
     private var compressionSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("创建压缩包").font(.title2)
-            Text("选中 \(sourcesForCompression.count) 个项目").foregroundStyle(.secondary)
-            Form {
-                Picker("压缩格式", selection: $options.format) {
-                    ForEach(ArchiveFormat.allCases) { format in Text(format.title).tag(format) }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("创建压缩包").font(.title2)
+                Text("选中 \(sourcesForCompression.count) 个项目").foregroundStyle(.secondary)
+                Form {
+                    Picker("压缩格式", selection: $options.format) {
+                        ForEach(ArchiveFormat.allCases) { format in Text(format.title).tag(format) }
+                    }
+                    Picker("压缩级别", selection: $options.level) {
+                        ForEach(0...9, id: \.self) { level in Text("\(level)").tag(level) }
+                    }
+                    Stepper("CPU 线程数：\(options.threads == 0 ? "自动" : String(options.threads))",
+                            value: $options.threads, in: 0...64)
+                    TextField("分卷大小（MB，0 为不分卷）", value: $options.volumeMB, format: .number)
                 }
-                Picker("压缩级别", selection: $options.level) {
-                    ForEach(0...9, id: \.self) { level in Text("\(level)").tag(level) }
+
+                // 高级参数区：方法/字典/词长/固实块/自由参数（对齐 7-Zip Add to Archive）。
+                if options.format != .tar {
+                    DisclosureGroup("高级参数") {
+                        Form {
+                            Picker("压缩方法", selection: $options.method) {
+                                ForEach(CompressionOptions.methodChoices(for: options.format), id: \.self) { m in
+                                    Text(m.isEmpty ? "默认" : (m == "Copy" ? "Copy（仅存储）" : m)).tag(m)
+                                }
+                            }
+                            Picker("字典大小", selection: $options.dictionaryMB) {
+                                Text("默认").tag(0)
+                                ForEach([1, 4, 8, 16, 32, 64, 128], id: \.self) { Text("\($0) MB").tag($0) }
+                            }
+                            Picker("词长", selection: $options.wordSize) {
+                                Text("默认").tag(0)
+                                ForEach([32, 64, 128, 273], id: \.self) { Text("\($0)").tag($0) }
+                            }
+                            if options.format == .sevenZip {
+                                Toggle("固实块（Solid Block）", isOn: $options.solidBlock)
+                            }
+                            TextField("自由参数（透传给 7zz，空格分隔）", text: $options.extraParams)
+                        }
+                        .padding(.top, 4)
+                    }
                 }
-                Stepper("CPU 线程数：\(options.threads == 0 ? "自动" : String(options.threads))",
-                        value: $options.threads, in: 0...64)
-                TextField("分卷大小（MB，0 为不分卷）", value: $options.volumeMB, format: .number)
-                SecureField("加密密码（留空不加密）", text: $options.password)
-                Toggle("7z 同时加密文件名", isOn: $options.encryptFileNames)
-                    .disabled(options.format != .sevenZip || options.password.isEmpty)
-                Toggle("排除 .DS_Store 和 __MACOSX", isOn: $options.excludeMacMetadata)
+
+                GroupBox("选项") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle("排除 .DS_Store 和 __MACOSX", isOn: $options.excludeMacMetadata)
+                        Toggle("排除 Mac 资源叉（._* 文件）", isOn: $options.excludeResourceForks)
+                        Toggle("压缩成功后删除源文件", isOn: $options.deleteAfterCompress)
+                        if options.deleteAfterCompress {
+                            Text("源文件将被永久删除（不进废纸篓），请确认归档可用后再使用。")
+                                .font(.caption).foregroundStyle(.red)
+                        }
+                    }
+                    .padding(6)
+                }
+
+                GroupBox("加密") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            if showCompressPassword {
+                                TextField("加密密码（留空不加密）", text: $options.password)
+                                TextField("再次输入密码", text: $passwordConfirm)
+                            } else {
+                                SecureField("加密密码（留空不加密）", text: $options.password)
+                                SecureField("再次输入密码", text: $passwordConfirm)
+                            }
+                        }
+                        HStack {
+                            Toggle("显示密码", isOn: $showCompressPassword)
+                            if !passwordsMatch {
+                                Text("两次输入的密码不一致").foregroundStyle(.red).font(.caption)
+                            }
+                        }
+                        if options.format == .zip, !options.password.isEmpty {
+                            Picker("加密方法", selection: $options.zipEncryption) {
+                                Text("AES-256").tag("AES256")
+                                Text("ZipCrypto（兼容旧系统）").tag("ZipCrypto")
+                            }
+                        }
+                        if options.format == .sevenZip {
+                            Toggle("同时加密文件名", isOn: $options.encryptFileNames)
+                                .disabled(options.password.isEmpty)
+                        }
+                    }
+                    .padding(6)
+                }
+
+                HStack {
+                    Spacer()
+                    Button("取消") { showCompressionSheet = false }
+                    Button("创建…") { finalizeCompression() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!passwordsMatch)
+                }
             }
-            HStack {
-                Spacer()
-                Button("取消") { showCompressionSheet = false }
-                Button("创建…") { finalizeCompression() }
-                    .buttonStyle(.borderedProminent)
-            }
+            .padding(24)
         }
-        .padding(24)
-        .frame(width: 510)
+        .frame(width: 540, height: 640)
     }
 
     /// 解压对话框：目标目录（可手输或浏览）、同名子文件夹、路径模式（完整/平铺）、
@@ -976,6 +1087,8 @@ struct PaneView: View {
                 sourcesForCompression = selectedLocalURLs
                 batchCompression = false
                 options = CompressionOptions()
+                passwordConfirm = ""
+                showCompressPassword = false
                 showCompressionSheet = true
             }
         }
@@ -1078,6 +1191,8 @@ struct PaneView: View {
         sourcesForCompression = panel.urls
         batchCompression = false
         options = CompressionOptions()
+        passwordConfirm = ""
+        showCompressPassword = false
         showCompressionSheet = true
     }
 
@@ -1091,6 +1206,8 @@ struct PaneView: View {
         sourcesForCompression = panel.urls
         batchCompression = true
         options = CompressionOptions()
+        passwordConfirm = ""
+        showCompressPassword = false
         showCompressionSheet = true
     }
 
@@ -1134,10 +1251,12 @@ struct PaneView: View {
     }
 
     private func finalizeCompression() {
+        guard passwordsMatch else { return }
         if batchCompression {
             guard let destination = chooseFolderPanel(title: "选择批量压缩包输出文件夹") else { return }
             model.batchCompress(sources: sourcesForCompression, to: destination, options: options)
             options.password = ""
+            passwordConfirm = ""
             showCompressionSheet = false
             return
         }
@@ -1150,6 +1269,7 @@ struct PaneView: View {
                        emailAfter: emailAfterCreate)
         emailAfterCreate = false
         options.password = ""
+        passwordConfirm = ""
         showCompressionSheet = false
     }
 
@@ -1248,6 +1368,8 @@ struct PaneView: View {
             sourcesForCompression = urls
             batchCompression = false
             options = CompressionOptions()
+            passwordConfirm = ""
+            showCompressPassword = false
             emailAfterCreate = email
             showCompressionSheet = true
         }
