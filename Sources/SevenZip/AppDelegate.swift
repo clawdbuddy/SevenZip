@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var receivedURLOpen = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 7zz 快速失败退出后，向其 stdin 写密码行会触发 EPIPE；
+        // 全局忽略 SIGPIPE，让写入以错误返回而不是信号杀死整个 App。
+        signal(SIGPIPE, SIG_IGN)
         NSApp.servicesProvider = self
         Task { @MainActor in
             AppActions.shared.applyAppearanceOnLaunch()
@@ -103,11 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         NSApp.activate(ignoringOtherApps: true)
-        Task { @MainActor in
-            // 服务命令都在主窗口里呈现（打开/解压/压缩所选），冷启动需先建场景。
-            AppActions.shared.requestMainScene()
-            action(urls)
-        }
+        Task { @MainActor in action(urls) }
     }
 
     /// 服务剪贴板同时携带新式 fileURL 条目与旧式 NSFilenamesPboardType，两者都要兼容。

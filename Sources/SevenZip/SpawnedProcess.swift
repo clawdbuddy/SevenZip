@@ -27,7 +27,13 @@ struct SpawnedProcess {
                        environment: [String: String]) throws -> SpawnedProcess {
         var outPipe: [Int32] = [-1, -1]
         var inPipe: [Int32] = [-1, -1]
-        guard pipe(&outPipe) == 0, pipe(&inPipe) == 0 else { throw SpawnError.pipeFailed }
+        guard pipe(&outPipe) == 0 else { throw SpawnError.pipeFailed }
+        // 第二根 pipe 失败时必须关掉已打开的 fds，否则泄漏。
+        guard pipe(&inPipe) == 0 else {
+            close(outPipe[0])
+            close(outPipe[1])
+            throw SpawnError.pipeFailed
+        }
 
         var actions: posix_spawn_file_actions_t? = nil
         posix_spawn_file_actions_init(&actions)

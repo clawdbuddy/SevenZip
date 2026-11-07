@@ -34,9 +34,9 @@ enum FileAssociation {
         let ownPath = Bundle.main.bundleURL.standardizedFileURL.path
         return supported.map { item in
             let handler = currentHandler(ext: item.ext)
-            let handlerPath = handler?.standardizedFileURL.path ?? ""
-            // /Applications/SevenZip.app 与 dist 副本都视为“我们”
-            let isOurs = handlerPath == ownPath || handler?.lastPathComponent == "SevenZip.app"
+            // 必须比对完整路径：只看 app 名会把用户机器上任何同名副本
+            // （下载目录里的另一份构建）误判为「已关联」，「移除」也会改错对象。
+            let isOurs = handler?.standardizedFileURL.path == ownPath
             return Entry(ext: item.ext,
                          handlerName: handler?.deletingPathExtension().lastPathComponent ?? "未设置",
                          isOurs: isOurs)

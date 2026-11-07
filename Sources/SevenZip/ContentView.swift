@@ -34,8 +34,23 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     }
 
     nonisolated func windowWillClose(_ notification: Notification) {
-        Task { @MainActor in self.window = nil }
+        Task { @MainActor in
+            self.window = nil
+            // 窗口销毁后：命令路由层必须复位，否则 Finder 右键命令会路由到
+            // 已销毁窗格安装的闭包（操作在不可见的死模型上执行），双击归档
+            // 也会把文件开进死窗格、新窗口只剩空壳。
+            let actions = AppActions.shared
+            actions.handlersInstalled = false
+            if let monitor = self.keyMonitor {
+                NSEvent.removeMonitor(monitor)
+                self.keyMonitor = nil
+            }
+        }
     }
+
+    /// ContentView 安装的本地功能键监视器；关窗时必须移除，否则重开窗口
+    /// 会累积多个监视器（F9 触发两次净效果为零，F5/F6 重复执行）。
+    var keyMonitor: Any?
 }
 
 /// 双窗格外壳（7zFM F9）：承载 1~2 个 PaneView，跟踪焦点窗格，
@@ -44,7 +59,10 @@ struct ContentView: View {
     @EnvironmentObject private var actions: AppActions
 
     @State private var dualPane = UserDefaults.standard.bool(forKey: "dualPane") {
-        didSet { UserDefaults.standard.set(dualPane, forKey: "dualPane") }
+        didSet {
+            UserDefaults.standard.set(dualPane, forKey: "dualPane")
+            actions.dualPaneActive = dualPane
+        }
     }
     @State private var focusedPane = 0
 
@@ -57,6 +75,7 @@ struct ContentView: View {
         }
         .frame(minWidth: 940, minHeight: 560)
         .onAppear {
+            actions.dualPaneActive = dualPane
             installShellActions()
             installFunctionKeyMonitor()
         }
@@ -74,9 +93,14 @@ struct ContentView: View {
 
     /// SwiftUI 菜单快捷键不支持 F5/F6/F9，用本地事件监听补齐（7zFM 键位）。
     private func installFunctionKeyMonitor() {
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            // 有 sheet 弹出时不拦截功能键。
-            guard NSApp.keyWindow?.attachedSheet == nil else { return event }
+        // 重复安装（窗口重开）前先移除旧监视器，避免累积触发。
+        if let old = MainWindowController.shared.keyMonitor {
+            NSEvent.removeMonitor(old)
+        }
+        MainWindowController.shared.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // 有 sheet 弹出时不拦截功能键；主窗口非 key 时（对话框/独立小窗在前）也不拦截。
+            guard let key = NSApp.keyWindow, key.attachedSheet == nil,
+                  key == MainWindowController.shared.window else { return event }
             switch event.keyCode {
             case 101:  // F9: 双窗格开关
                 Task { @MainActor in actions.toggleDualPane() }

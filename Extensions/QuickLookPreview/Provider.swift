@@ -19,6 +19,9 @@ final class Provider: NSViewController, QLPreviewingController {
     private let noteLabel = NSTextField(labelWithString: "")
     private var rootNodes: [Node] = []
     private var truncatedCount = 0
+    /// 递增请求序号：Quick Look 复用同一 Provider 连续预览时，
+    /// 慢请求的结果不得覆盖新请求的界面（结果乱序）。
+    private var requestID = 0
 
     /// 树节点：目录持有子节点；文件即叶子。
     private final class Node {
@@ -89,10 +92,15 @@ final class Provider: NSViewController, QLPreviewingController {
 
     func preparePreviewOfFile(at url: URL, completionHandler handler: @escaping (Error?) -> Void) {
         summaryLabel.stringValue = "正在读取 \(url.lastPathComponent) …"
+        noteLabel.stringValue = ""
+        requestID += 1
+        let id = requestID
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Self.listArchive(url)
-            DispatchQueue.main.async {
-                guard let self else { return }
+            DispatchQueue.main.async { [weak self] in
+                // 过期请求（用户已切换到另一个文件）：完成回调但不得更新界面。
+                // self 已释放时也必须调 handler，否则 Quick Look 挂起。
+                guard let self, self.requestID == id else { handler(nil); return }
                 self.summaryLabel.stringValue = result.summary
                 self.noteLabel.stringValue = result.note
                 self.rootNodes = result.nodes
@@ -132,53 +140,53 @@ final class Provider: NSViewController, QLPreviewingController {
             result.summary = "未找到内置 7zz 引擎"
             return result
         }
-        let process = Process()
-        process.executableURL = engine
-        process.arguments = ["l", "-slt", url.path]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+        // 必须用 posix_spawn：Foundation Process 经 fileSystemRepresentation 会把
+        // argv 归一化为 NFD，NFC 文件名（é、日韩音节）在 ExFAT/SMB 卷上直接打不开。
+        var environment = ProcessInfo.processInfo.environment
+        environment["LC_ALL"] = "C"
+        let spawned: SpawnedProcess
         do {
-            try process.run()
+            spawned = try SpawnedProcess.launch(executable: engine,
+                                                arguments: ["l", "-slt", url.path],
+                                                directory: nil,
+                                                environment: environment)
         } catch {
             result.summary = "无法启动 7zz：\(error.localizedDescription)"
             return result
         }
         // 限时读取：超过 timeLimit 杀掉进程，用已捕获的部分输出解析。
-        var captured = Data()
-        let lock = NSLock()
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            lock.lock()
-            captured.append(chunk)
-            lock.unlock()
-        }
-        let deadline = Date().addingTimeInterval(timeLimit)
+        let finished = NSLock()
+        var didFinish = false
         var timedOut = false
-        while process.isRunning {
-            if Date() >= deadline {
-                process.terminate()
-                timedOut = true
-                break
-            }
-            Thread.sleep(forTimeInterval: 0.02)
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + timeLimit) {
+            finished.lock()
+            let done = didFinish
+            if !done { timedOut = true }
+            finished.unlock()
+            if !done { kill(spawned.pid, SIGTERM) }
         }
-        process.waitUntilExit()
-        pipe.fileHandleForReading.readabilityHandler = nil
-        lock.lock()
-        captured.append(pipe.fileHandleForReading.readDataToEndOfFile())
-        let data = captured
-        lock.unlock()
+        var captured = Data()
+        while true {
+            let chunk = spawned.stdoutRead.availableData
+            if chunk.isEmpty { break }
+            captured.append(chunk)
+        }
+        let code = spawned.waitForExit()
+        finished.lock()
+        didFinish = true
+        let wasTimedOut = timedOut
+        finished.unlock()
 
-        let text = String(decoding: data, as: UTF8.self)
+        let text = String(decoding: captured, as: UTF8.self)
 
         // 文件名加密的归档无法在无密码状态下列表——这不是错误，如实提示。
-        guard process.terminationStatus == 0, !text.isEmpty else {
+        // 超时被杀的退出码必非零（143），但部分输出仍然有效，照常解析。
+        guard wasTimedOut || code == 0, !text.isEmpty else {
             if text.localizedCaseInsensitiveContains("password") {
                 result.summary = url.lastPathComponent
                 result.note = "文件名已加密，请在七压中输入密码查看。"
             } else {
-                result.summary = "无法读取压缩包（7zz 退出码 \(process.terminationStatus)）"
+                result.summary = "无法读取压缩包（7zz 退出码 \(code)）"
             }
             return result
         }
@@ -215,7 +223,7 @@ final class Provider: NSViewController, QLPreviewingController {
         if header.multivolume { notes.append("属于分卷压缩包") }
         if totalCount > entryLimit {
             notes.append("…另有 \(totalCount - entryLimit) 项 — 在七压中打开")
-        } else if timedOut {
+        } else if wasTimedOut {
             notes.append("预览超时，仅显示前 \(entries.count) 项 — 在七压中打开")
         }
         result.note = notes.joined(separator: "；")

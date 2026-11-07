@@ -39,6 +39,9 @@ final class AppActions: ObservableObject {
     /// 由非焦点窗格安装：接收另一窗格复制过来的本地文件（加入其归档）。
     var receiveFilesFromOtherPane: ([URL]) -> Void = { _ in }
 
+    /// 双窗格是否开启（ContentView 同步；菜单据此门控 F5/F6 与「切换到另一窗格」）。
+    var dualPaneActive = false
+
     /// 文件列表视图模式：详细资料（表格）/ 大图标（网格）。
     enum ViewMode: String, CaseIterable, Identifiable {
         case list, icons
@@ -120,7 +123,6 @@ final class AppActions: ObservableObject {
         case extractFolder([URL])          // 解压到 "名称/"（同名子目录）
         case extractChoose([URL])          // 解压到…（弹窗选目录）
         case test([URL])                   // 测试压缩包
-        case addDialog([URL], email: Bool) // 添加到压缩包…（弹选项；email=压缩并邮件…）
         case compress([URL], format: String)
         case compressEmail([URL], format: String)
         case checksum([URL], algorithm: String)
@@ -142,32 +144,38 @@ final class AppActions: ObservableObject {
     var checksumFiles: ([URL], String) -> Void = { _, _ in }
 
     func routeOpenFiles(_ urls: [URL]) {
+        // 唯一允许弹出主窗口的命令路径（「用七压打开」/双击归档）。
         requestMainScene()
         if handlersInstalled { openFiles(urls) } else { pendingServices.append(.open(urls)) }
     }
+    // 以下命令：主窗口已开则就地执行（进度显示在窗格里），未开则交给独立
+    // 执行器小窗，绝不主动弹出主程序（用户规则：右键只有「用七压打开」开主窗口）。
     func routeExtractInPlace(_ urls: [URL]) {
-        if handlersInstalled { extractInPlace(urls) } else { pendingServices.append(.extract(urls)) }
+        if handlersInstalled { extractInPlace(urls) } else { StandaloneOperationController.run(.extractHere(urls)) }
     }
     func routeExtractToNamedFolder(_ urls: [URL]) {
-        if handlersInstalled { extractToNamedFolder(urls) } else { pendingServices.append(.extractFolder(urls)) }
+        if handlersInstalled { extractToNamedFolder(urls) } else { StandaloneOperationController.run(.extractToNamedFolders(urls)) }
     }
     func routeExtractChooseDestination(_ urls: [URL]) {
-        if handlersInstalled { extractChooseDestination(urls) } else { pendingServices.append(.extractChoose(urls)) }
+        if handlersInstalled { extractChooseDestination(urls) } else { StandaloneOperationController.run(.extractChoosing(urls)) }
     }
     func routeTestArchives(_ urls: [URL]) {
-        if handlersInstalled { testArchives(urls) } else { pendingServices.append(.test(urls)) }
+        if handlersInstalled { testArchives(urls) } else { StandaloneOperationController.run(.test(urls)) }
     }
     func routeAddToArchiveDialog(_ urls: [URL], email: Bool = false) {
-        if handlersInstalled { addToArchiveDialog(urls, email) } else { pendingServices.append(.addDialog(urls, email: email)) }
+        // 主窗口未开时直接弹独立对话框——缓冲等待主窗口会让陈旧请求在日后
+        // 主窗口打开时莫名弹出（且按用户规则该命令本来就不该开主窗口）。
+        if handlersInstalled { addToArchiveDialog(urls, email) }
+        else { CompressDialogController.shared.show(sources: urls, email: email) }
     }
     func routeCompressInPlace(_ urls: [URL], format: String = "zip") {
-        if handlersInstalled { compressInPlace(urls, format) } else { pendingServices.append(.compress(urls, format: format)) }
+        if handlersInstalled { compressInPlace(urls, format) } else { StandaloneOperationController.run(.compress(urls, format: format)) }
     }
     func routeCompressAndEmail(_ urls: [URL], format: String) {
-        if handlersInstalled { compressAndEmail(urls, format) } else { pendingServices.append(.compressEmail(urls, format: format)) }
+        if handlersInstalled { compressAndEmail(urls, format) } else { StandaloneOperationController.run(.compressAndEmail(urls, format: format)) }
     }
     func routeChecksumFiles(_ urls: [URL], algorithm: String) {
-        if handlersInstalled { checksumFiles(urls, algorithm) } else { pendingServices.append(.checksum(urls, algorithm: algorithm)) }
+        if handlersInstalled { checksumFiles(urls, algorithm) } else { StandaloneOperationController.run(.checksum(urls, algorithm: algorithm)) }
     }
 
     /// 解析 sevenzip://<action>?path=… 命令 URL 并路由（AppDelegate 与
@@ -184,16 +192,16 @@ final class AppActions: ObservableObject {
         let algorithm = components.queryItems?.first { $0.name == "algo" }?.value ?? "SHA256"
         switch url.host {
         case "add-dialog", "compress-email-dialog":
-            // 独立对话框承载，不需要主窗口：不置 mainSceneDesired，冷启动时
-            // App body 保持占位场景，主窗口从一开始就不存在。
+            // 独立对话框承载，不需要主窗口（主窗口只在「用七压打开」时创建，
+            // 见 MainWindowController）。
             CompressDialogController.shared.show(sources: files, email: url.host == "compress-email-dialog")
-        case "extract": requestMainScene(); routeExtractInPlace(files)
-        case "extract-folder": requestMainScene(); routeExtractToNamedFolder(files)
-        case "extract-choose": requestMainScene(); routeExtractChooseDestination(files)
-        case "test": requestMainScene(); routeTestArchives(files)
-        case "compress": requestMainScene(); routeCompressInPlace(files, format: format)
-        case "compress-email": requestMainScene(); routeCompressAndEmail(files, format: format)
-        case "checksum": requestMainScene(); routeChecksumFiles(files, algorithm: algorithm)
+        case "extract": routeExtractInPlace(files)
+        case "extract-folder": routeExtractToNamedFolder(files)
+        case "extract-choose": routeExtractChooseDestination(files)
+        case "test": routeTestArchives(files)
+        case "compress": routeCompressInPlace(files, format: format)
+        case "compress-email": routeCompressAndEmail(files, format: format)
+        case "checksum": routeChecksumFiles(files, algorithm: algorithm)
         default: routeOpenFiles(files)
         }
     }
@@ -209,7 +217,6 @@ final class AppActions: ObservableObject {
             case .extractFolder(let urls): extractToNamedFolder(urls)
             case .extractChoose(let urls): extractChooseDestination(urls)
             case .test(let urls): testArchives(urls)
-            case .addDialog(let urls, let email): addToArchiveDialog(urls, email)
             case .compress(let urls, let format): compressInPlace(urls, format)
             case .compressEmail(let urls, let format): compressAndEmail(urls, format)
             case .checksum(let urls, let algorithm): checksumFiles(urls, algorithm)

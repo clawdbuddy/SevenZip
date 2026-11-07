@@ -17,6 +17,9 @@ final class BenchmarkRunner: ObservableObject {
     var dictionaryMB = 32
 
     private var pid: pid_t?
+    /// 「重新启动」请求标志：stop() 是异步的（要等读循环 EOF + waitForExit 回主线程
+    /// finish 才置 running=false），同步连调 stop();start() 会被 guard !running 吞掉。
+    private var restartPending = false
 
     func start() {
         guard !running else { return }
@@ -45,8 +48,8 @@ final class BenchmarkRunner: ObservableObject {
         pid = spawned.pid
         // Benchmark 不读 stdin；写空行后关闭，避免引擎等待输入。
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            spawned.stdinWrite.write(Data("\n".utf8))
-            spawned.stdinWrite.closeFile()
+            try? spawned.stdinWrite.write(contentsOf: Data("\n".utf8))
+            try? spawned.stdinWrite.close()
             var captured = Data()
             while true {
                 let chunk = spawned.stdoutRead.availableData
@@ -65,6 +68,16 @@ final class BenchmarkRunner: ObservableObject {
         if let pid { kill(pid, SIGTERM) }
     }
 
+    /// 停止当前运行并在其结束后自动重启（供「重新启动」按钮）。
+    func restart() {
+        if running {
+            restartPending = true
+            stop()
+        } else {
+            start()
+        }
+    }
+
     private func append(_ text: String) {
         guard running else { return }
         output = String((output + text).suffix(120_000))
@@ -77,6 +90,10 @@ final class BenchmarkRunner: ObservableObject {
             totalRating = rating
         } else if code != 0 {
             totalRating = ""
+        }
+        if restartPending {
+            restartPending = false
+            start()
         }
     }
 
@@ -145,7 +162,7 @@ struct BenchmarkView: View {
                 Spacer()
                 if runner.running {
                     Button("停止") { runner.stop() }
-                    Button("重新启动") { runner.stop(); runner.start() }
+                    Button("重新启动") { runner.restart() }
                 } else {
                     Button("开始") { runner.start() }
                         .keyboardShortcut(.defaultAction)

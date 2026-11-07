@@ -239,9 +239,10 @@ enum CompressDestination {
 struct StandaloneCompressView: View {
     let sources: [URL]
     let email: Bool
+    /// 由 CompressDialogController 注入（控制器需要查询忙闲）。
+    @ObservedObject var model: ArchiveModel
     var onClose: () -> Void
 
-    @StateObject private var model = ArchiveModel()
     @State private var options = CompressionOptions()
     @State private var passwordConfirm = ""
     @State private var showCompressPassword = false
@@ -259,6 +260,11 @@ struct StandaloneCompressView: View {
             Text("添加到压缩包").font(.title2)
             Text("选中 \(sources.count) 个项目").foregroundStyle(.secondary).font(.callout)
             form
+            // 失败/警告的具体原因（否则只有一句毫无信息的「操作失败」）。
+            if let error = model.errorMessage {
+                Text(error).font(.caption).foregroundStyle(.red)
+                    .textSelection(.enabled).lineLimit(6)
+            }
             HStack(spacing: 12) {
                 if model.busy {
                     if let fraction = model.progress {
@@ -283,10 +289,23 @@ struct StandaloneCompressView: View {
         .padding(20)
         .frame(width: 720, height: 620)
         .onAppear { archiveDestPath = CompressDestination.defaultPath(sources: sources, format: options.format) }
+        .onChange(of: model.emailShareURL) { url in
+            // 「压缩并邮件」：调出系统邮件分享；未配置邮件则回退 Finder 选中。
+            guard let url else { return }
+            model.emailShareURL = nil
+            if let service = NSSharingService(named: .composeEmail) {
+                service.perform(withItems: [url])
+            } else {
+                NSWorkspace.shared.selectFile(url.path,
+                                              inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+                model.warn("系统未配置邮件应用，已在 Finder 中选中生成的压缩包。")
+            }
+        }
         .onChange(of: model.busy) { busy in
             // 队列排空：成功（状态"已创建 …"）→ 短暂停留让用户看到结果后自动关窗；
-            // 失败/取消则停留并展示错误信息。
-            if submitted, !busy, model.status.hasPrefix("已创建") {
+            // 失败/取消/警告（errorMessage 非空，如未配置邮件）则停留展示。
+            if submitted, !busy, model.errorMessage == nil,
+               model.status.hasPrefix("已创建") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { onClose() }
             }
         }
@@ -322,17 +341,32 @@ struct StandaloneCompressView: View {
 final class CompressDialogController {
     static let shared = CompressDialogController()
     private(set) var window: NSWindow?
+    /// 由控制器创建并注入视图，便于在 show() 时查询忙闲。
+    private var model: ArchiveModel?
 
     func show(sources: [URL], email: Bool) {
-        window?.close()
-        let view = StandaloneCompressView(sources: sources, email: email) { [weak self] in
-            self?.window?.close()
-            self?.window = nil
+        // 压缩进行中不销毁旧窗口（否则 7zz 成孤儿、进度归零）：
+        // 把进行中的对话框带到前面，用户可等待或取消后重试。
+        if model?.busy == true, let window {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
         }
+        window?.close()
+        let model = ArchiveModel()
+        self.model = model
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 760, height: 660),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
+        // onClose 必须绑定本窗口实例：成功后 1.2s 的自动关窗定时器触发时，
+        // 用户可能已打开新对话框，经单例间接寻址会把新窗口误关。
+        let view = StandaloneCompressView(sources: sources, email: email, model: model) { [weak self, weak window] in
+            guard let self, let window, self.window === window else { return }
+            self.window = nil
+            self.model = nil
+            window.close()
+        }
         window.title = email ? "压缩并邮件" : "添加到压缩包"
         window.contentView = NSHostingView(rootView: view)
         window.center()

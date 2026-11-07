@@ -36,16 +36,24 @@ final class ArchiveModel: ObservableObject {
         case listing(URL), created(URL), createdSilent(URL), createdForEmail(URL), batchCreated(URL), extracted(ExtractCompletion), preview(URL, String, [String: String]),
              nested(URL, String, [String: String]),
              batchPreflight(URL, URL, ConflictPolicy, String?, ExtractPathMode),
-             conversionExtracted(URL, URL, ArchiveFormat, String?), converted(URL, URL), tested(URL?), edited(URL), hash
+             conversionExtracted(URL, URL, ArchiveFormat, String?, [String: String]), converted(URL, URL), tested(URL?), edited(URL), hash
     }
 
     private struct Job {
         let invocation: ArchiveInvocation
         let completion: Completion
+        /// 同组任务在任一失败时整体取消（「移出归档」= 解压 → 删除 依赖链：
+        /// 解压失败时删除绝不能执行）。
+        var group: UUID? = nil
     }
 
     func dismissError() { errorMessage = nil }
-    func warn(_ message: String) { report(message) }
+    /// 警告级反馈：记录到 errorMessage/output，但不把状态改写为「操作失败」
+    /// （如「压缩成功但系统未配置邮件」——操作本身成功了，不能让界面呈现为失败）。
+    func warn(_ message: String) {
+        errorMessage = message
+        output = message
+    }
     /// Non-error feedback that does not flag the status as a failure.
     func announce(_ message: String) {
         status = message
@@ -83,7 +91,8 @@ final class ArchiveModel: ObservableObject {
 
     func extract(to directory: URL, paths: [String] = [],
                  conflict: ConflictPolicy = .skip, password: String? = nil,
-                 pathMode: ExtractPathMode = .full, eliminateRoot: String? = nil) {
+                 pathMode: ExtractPathMode = .full, eliminateRoot: String? = nil,
+                 group: UUID? = nil) {
         guard let url = archiveURL else { return }
         guard listingComplete else { report("归档清单尚未完整读取，拒绝解压。") ; return }
         guard entries.allSatisfy({ ArchivePath.isSafe($0.path) }) else {
@@ -98,7 +107,7 @@ final class ArchiveModel: ObservableObject {
             let map = ArchiveListing.legacyNameRestoreMap(entries, flat: pathMode == .flat)
             enqueue(command, completion: .extracted(ExtractCompletion(
                 destination: directory, restoreMap: map,
-                eliminateRoot: pathMode == .full ? eliminateRoot : nil)))
+                eliminateRoot: pathMode == .full ? eliminateRoot : nil)), group: group)
         } catch { report(error.localizedDescription) }
     }
 
@@ -221,12 +230,15 @@ final class ArchiveModel: ObservableObject {
             report("转换中止：源归档包含不安全路径。")
             return
         }
+        // 文件名修复表必须在入队时快照：完成回调时用户可能已打开其他归档，
+        // 那时再读 entries 会生成与暂存内容不匹配的修复表。
+        let restoreMap = ArchiveListing.legacyNameRestoreMap(entries)
         let staging = FileManager.default.temporaryDirectory
             .appendingPathComponent("SevenZip-convert-\(UUID().uuidString)", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
             let command = try ArchiveCommands.extract(source, to: staging, password: password)
-            enqueue(command, completion: .conversionExtracted(staging, destination, format, password))
+            enqueue(command, completion: .conversionExtracted(staging, destination, format, password, restoreMap))
         } catch { report(error.localizedDescription) }
     }
 
@@ -248,11 +260,11 @@ final class ArchiveModel: ObservableObject {
         } catch { report(error.localizedDescription) }
     }
 
-    func delete(paths: [String], password: String? = nil) {
+    func delete(paths: [String], password: String? = nil, group: UUID? = nil) {
         guard let archive = editableArchive() else { return }
         do {
             enqueue(try ArchiveCommands.delete(archive, paths: enginePaths(for: expandedPaths(paths)), password: password),
-                    completion: .edited(archive))
+                    completion: .edited(archive), group: group)
         } catch { report(error.localizedDescription) }
     }
 
@@ -282,9 +294,14 @@ final class ArchiveModel: ObservableObject {
         } catch { report(error.localizedDescription) }
     }
 
+    /// 取消标志：cancel() 只 SIGTERM 当前进程，complete() 据此按「已取消」收尾，
+    /// 而不是误报「操作失败（退出码 143）」。
+    private var cancelRequested = false
+
     func cancel() {
         pending.removeAll()
         queueCount = 0
+        cancelRequested = true
         if let pid = runningPID { kill(pid, SIGTERM) }
     }
 
@@ -360,71 +377,78 @@ final class ArchiveModel: ObservableObject {
         try? fm.removeItem(at: root)
     }
 
-    private func enqueue(_ invocation: ArchiveInvocation, completion: Completion) {
-        pending.append(Job(invocation: invocation, completion: completion))
+    private func enqueue(_ invocation: ArchiveInvocation, completion: Completion, group: UUID? = nil) {
+        pending.append(Job(invocation: invocation, completion: completion, group: group))
         queueCount = pending.count
         if !busy { launchNext() }
     }
 
     private func launchNext() {
-        guard !busy, !pending.isEmpty else { return }
-        let job = pending.removeFirst()
-        queueCount = pending.count
+        // 循环而非递归：资源缺失/启动失败等路径跳过一个任务后必须继续排空队列，
+        // 否则剩余任务永远卡住（队列显示空闲但 pending 非空）。
+        while !busy, !pending.isEmpty {
+            let job = pending.removeFirst()
+            queueCount = pending.count
 
-        guard let resourceRoot = Bundle.main.resourceURL else { report("应用资源目录不存在。") ; return }
-        let binary = resourceRoot.appendingPathComponent("bin/7zz")
-        guard FileManager.default.isExecutableFile(atPath: binary.path) else {
-            report("找不到内置 7zz，请在 Mac 上运行 scripts/build-macos.sh。")
-            return
-        }
-
-        var environment = ProcessInfo.processInfo.environment
-        environment["LC_ALL"] = "C"
-
-        let spawned: SpawnedProcess
-        do {
-            spawned = try SpawnedProcess.launch(executable: binary,
-                                                arguments: job.invocation.arguments,
-                                                directory: job.invocation.directory,
-                                                environment: environment)
-        } catch {
-            busy = false
-            report("启动 7zz 失败：\(error.localizedDescription)")
-            launchNext()
-            return
-        }
-
-        busy = true
-        progress = nil
-        progressFragment = ""
-        let runID = UUID()
-        activeRunID = runID
-        status = "执行中：\(job.invocation.arguments.first ?? "")（队列 \(queueCount)）"
-        output = "正在运行官方 7zz 引擎…"
-        runningPID = spawned.pid
-
-        // Passwords travel over an anonymous stdin pipe, never argv, logs or env.
-        // Sending a blank line makes encrypted archives fail instead of hanging.
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            spawned.stdinWrite.write(Data(((job.invocation.password ?? "") + "\n").utf8))
-            spawned.stdinWrite.closeFile()
-            var captured = Data()
-            let maximumBytes = 64 * 1024 * 1024
-            var truncated = false
-            while true {
-                let chunk = spawned.stdoutRead.availableData
-                if chunk.isEmpty { break }
-                let remaining = max(0, maximumBytes - captured.count)
-                if chunk.count > remaining { truncated = true }
-                if remaining > 0 { captured.append(contentsOf: chunk.prefix(remaining)) }
-                let fragment = String(decoding: chunk, as: UTF8.self)
-                Task { @MainActor [weak self] in self?.consumeProgress(fragment, runID: runID) }
+            guard let resourceRoot = Bundle.main.resourceURL else {
+                report("应用资源目录不存在。")
+                continue
             }
-            let code = spawned.waitForExit()
-            let text = String(decoding: captured, as: UTF8.self)
-            Task { @MainActor [weak self] in
-                self?.complete(job, code: code, text: text, truncated: truncated, runID: runID)
+            let binary = resourceRoot.appendingPathComponent("bin/7zz")
+            guard FileManager.default.isExecutableFile(atPath: binary.path) else {
+                report("找不到内置 7zz，请在 Mac 上运行 scripts/build-macos.sh。")
+                continue
             }
+
+            var environment = ProcessInfo.processInfo.environment
+            environment["LC_ALL"] = "C"
+
+            let spawned: SpawnedProcess
+            do {
+                spawned = try SpawnedProcess.launch(executable: binary,
+                                                    arguments: job.invocation.arguments,
+                                                    directory: job.invocation.directory,
+                                                    environment: environment)
+            } catch {
+                report("启动 7zz 失败：\(error.localizedDescription)")
+                continue
+            }
+
+            busy = true
+            progress = nil
+            progressFragment = ""
+            let runID = UUID()
+            activeRunID = runID
+            status = "执行中：\(job.invocation.arguments.first ?? "")（队列 \(queueCount)）"
+            output = "正在运行官方 7zz 引擎…"
+            runningPID = spawned.pid
+
+            // Passwords travel over an anonymous stdin pipe, never argv, logs or env.
+            // Sending a blank line makes encrypted archives fail instead of hanging.
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                // SIGPIPE 已在启动时全局忽略；7zz 先退出时这里写入返回 EPIPE，
+                // 用可抛错的 write(contentsOf:) 吞掉，避免 FileHandle.write 抛异常。
+                try? spawned.stdinWrite.write(contentsOf: Data(((job.invocation.password ?? "") + "\n").utf8))
+                try? spawned.stdinWrite.close()
+                var captured = Data()
+                let maximumBytes = 64 * 1024 * 1024
+                var truncated = false
+                while true {
+                    let chunk = spawned.stdoutRead.availableData
+                    if chunk.isEmpty { break }
+                    let remaining = max(0, maximumBytes - captured.count)
+                    if chunk.count > remaining { truncated = true }
+                    if remaining > 0 { captured.append(contentsOf: chunk.prefix(remaining)) }
+                    let fragment = String(decoding: chunk, as: UTF8.self)
+                    Task { @MainActor [weak self] in self?.consumeProgress(fragment, runID: runID) }
+                }
+                let code = spawned.waitForExit()
+                let text = String(decoding: captured, as: UTF8.self)
+                Task { @MainActor [weak self] in
+                    self?.complete(job, code: code, text: text, truncated: truncated, runID: runID)
+                }
+            }
+            return
         }
     }
 
@@ -444,15 +468,35 @@ final class ArchiveModel: ObservableObject {
         busy = false
         runningPID = nil
         progress = nil
+        // 用户主动取消：进程被 SIGTERM（退出码 143），按取消收尾而非报错；
+        // 且不做密码错误探测（取消的残缺输出可能恰好含 "password"）。
+        if cancelRequested {
+            cancelRequested = false
+            status = "已取消"
+            output = "操作已取消。"
+            launchNext()
+            return
+        }
         output = String(text.suffix(60_000))
         guard code == 0 else {
             switch job.completion {
-            case .conversionExtracted(let staging, _, _, _), .converted(_, let staging):
+            case .conversionExtracted(let staging, _, _, _, _), .converted(_, let staging):
                 try? FileManager.default.removeItem(at: staging)
+            case .preview(let folder, _, _), .nested(let folder, _, _):
+                // 失败时清理已创建的临时目录，避免泄漏。
+                try? FileManager.default.removeItem(at: folder)
             default: break
             }
+            // 「移出归档」等依赖链：前置任务失败，取消同组的后续任务
+            // （否则解压失败后删除仍会执行，移动退化为删除）。
+            if let group = job.group {
+                pending.removeAll { $0.group == group }
+                queueCount = pending.count
+            }
             // Encrypted archives fail listing with a password error: ask instead of erroring.
+            // 仅限当前归档——过期清单任务（用户已打开其他归档）不得弹密码框。
             if case .listing(let archive) = job.completion,
+               archive == archiveURL,
                text.localizedCaseInsensitiveContains("password") {
                 passwordNeededFor = archive
                 status = "需要密码：\(archive.lastPathComponent)"
@@ -466,7 +510,16 @@ final class ArchiveModel: ObservableObject {
         }
         switch job.completion {
         case .listing(let archive):
-            guard !truncated else { report("归档清单超过 64 MiB 限制，请使用 CLI 处理。") ; return }
+            guard !truncated else {
+                report("归档清单超过 64 MiB 限制，请使用 CLI 处理。")
+                launchNext()
+                return
+            }
+            // 过期清单：open(B) 后 list(A) 才完成，A 的条目绝不能写入当前状态。
+            guard archive == archiveURL else {
+                launchNext()
+                return
+            }
             var parsed = ArchiveListing.parse(text)
             if archive.pathExtension.lowercased() == "zip" {
                 parsed = ArchiveListing.recoveringLegacyZipNames(parsed)
@@ -498,7 +551,11 @@ final class ArchiveModel: ObservableObject {
             }
             status = "已解压到 \(completion.destination.path)"
         case .batchPreflight(let archive, let target, let conflict, let password, let pathMode):
-            guard !truncated else { report("批量解压安全检查中止：清单被截断。") ; return }
+            guard !truncated else {
+                report("批量解压安全检查中止：清单被截断。")
+                launchNext()
+                return
+            }
             var paths = ArchiveListing.parse(text)
             if archive.pathExtension.lowercased() == "zip" {
                 paths = ArchiveListing.recoveringLegacyZipNames(paths)
@@ -528,10 +585,7 @@ final class ArchiveModel: ObservableObject {
             }
             previewURL = resolved
             status = "已准备预览：\(displayPath.components(separatedBy: "/").last ?? displayPath)"
-            if previewFolders.count > 3 {
-                let old = previewFolders.removeFirst()
-                try? FileManager.default.removeItem(at: old)
-            }
+            trimPreviewFolders()
         case .nested(let folder, let displayPath, let restoreMap):
             restoreRecoveredNames(in: folder, map: restoreMap)
             let resolved = folder.appendingPathComponent(displayPath).resolvingSymlinksInPath().standardizedFileURL
@@ -545,14 +599,15 @@ final class ArchiveModel: ObservableObject {
             nestedArchiveURL = resolved
             nestedEntryPath = displayPath
             status = "已准备嵌套归档：\(resolved.lastPathComponent)"
-        case .conversionExtracted(let staging, let destination, let format, let password):
+            trimPreviewFolders()
+        case .conversionExtracted(let staging, let destination, let format, let password, let restoreMap):
             guard !containsSymlinks(staging) else {
                 report("转换中止：临时解压内容包含符号链接，需在隔离环境中手工处理。")
                 try? FileManager.default.removeItem(at: staging)
                 launchNext()
                 return
             }
-            restoreRecoveredNames(in: staging, map: ArchiveListing.legacyNameRestoreMap(entries))
+            restoreRecoveredNames(in: staging, map: restoreMap)
             do {
                 let files = try FileManager.default.contentsOfDirectory(at: staging,
                                                                          includingPropertiesForKeys: nil)
@@ -584,6 +639,19 @@ final class ArchiveModel: ObservableObject {
             status = "校验和已计算，详见日志"
         }
         launchNext()
+    }
+
+    /// 预览/嵌套临时目录修剪（两类共用同一个数组，故两者完成后都要调用）。
+    /// 当前正在展示的预览/嵌套根目录受保护，永不删除。
+    private func trimPreviewFolders() {
+        let protected = [previewURL, nestedArchiveURL].compactMap { $0?.path }
+        while previewFolders.count > 3 {
+            guard let victim = previewFolders.first(where: { dir in
+                !protected.contains { $0 == dir.path || $0.hasPrefix(dir.path + "/") }
+            }) else { return }
+            previewFolders.removeAll { $0 == victim }
+            try? FileManager.default.removeItem(at: victim)
+        }
     }
 
     private func report(_ message: String) {

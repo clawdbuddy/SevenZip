@@ -64,8 +64,21 @@ struct PaneView: View {
         let innerFolder: String // 外层归档内的浏览位置
         let tempDir: URL        // 本层嵌套解压出的临时目录（退出嵌套时清理）
         let displayPath: String // 嵌套归档在外层中的路径（地址栏显示用）
+        let password: String?   // 外层归档的密码（".." 返回外层时重列清单需要）
     }
     @State private var nestingStack: [NestedContext] = []
+
+    /// 嵌套条目可能带子目录（folder/sub/inner.7z），deletingLastPathComponent
+    /// 只会得到 folder/sub——必须向上找到 SevenZip-nested- 根目录才能真正清理。
+    private static func nestedTempRoot(of nested: URL) -> URL {
+        var url = nested.deletingLastPathComponent()
+        while !url.lastPathComponent.hasPrefix("SevenZip-nested-") {
+            let parent = url.deletingLastPathComponent()
+            if parent == url { return nested.deletingLastPathComponent() }  // 兜底：绝不返回根目录
+            url = parent
+        }
+        return url
+    }
 
     private static let archiveExtensions: Set<String> = ["7z", "zip", "tar", "gz", "tgz", "bz2", "xz", "rar", "001"]
 
@@ -312,14 +325,16 @@ struct PaneView: View {
         .onChange(of: model.nestedArchiveURL) { nested in
             // 嵌套归档已解压到临时目录：压栈并切换进去（model.open 会重置 nestedArchiveURL）。
             guard let nested, let outer = model.archiveURL, inArchive else { return }
+            let password = consumePassword()
             let context = NestedContext(outerURL: outer,
                                         innerFolder: innerFolder,
-                                        tempDir: nested.deletingLastPathComponent(),
-                                        displayPath: model.nestedEntryPath ?? nested.lastPathComponent)
+                                        tempDir: Self.nestedTempRoot(of: nested),
+                                        displayPath: model.nestedEntryPath ?? nested.lastPathComponent,
+                                        password: password)
             nestingStack.append(context)
             innerFolder = ""
             selected.removeAll()
-            model.open(nested, password: consumePassword())
+            model.open(nested, password: password)
         }
         .onChange(of: model.entries) { entries in
             selected.formIntersection(Set(entries.map(\.path)).union([".."]))
@@ -918,7 +933,7 @@ struct PaneView: View {
                 // 嵌套根目录的 ".."：回到外层归档并清理本层临时文件。
                 try? FileManager.default.removeItem(at: context.tempDir)
                 innerFolder = context.innerFolder
-                model.open(context.outerURL)
+                model.open(context.outerURL, password: context.password)
             } else if let archive = model.archiveURL {
                 // ".." at the archive root climbs back out to the disk (7zFM behavior).
                 inArchive = false
@@ -962,16 +977,41 @@ struct PaneView: View {
 
     private func navigateToAddress(_ address: String) {
         clearNesting()
-        if let archive = model.archiveURL,
-           address.hasPrefix(archive.path + "\\") {
+        if address.contains("\\") {
+            // 历史里的归档地址：[磁盘归档路径]\[归档内路径\]。嵌套层级
+            // （…\inner.7z\…）不可直接恢复，退回到最外层归档根目录。
+            let diskPath = String(address.split(separator: "\\", maxSplits: 1).first ?? "")
+            let url = URL(fileURLWithPath: diskPath)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                model.warn("归档已不存在：\(diskPath)")
+                return
+            }
             inArchive = true
-            innerFolder = String(address.dropFirst(archive.path.count + 1))
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\\"))
-                .replacingOccurrences(of: "\\", with: "/")
-        } else {
+            innerFolder = ""
+            selected.removeAll()
+            if model.archiveURL == url {
+                // 当前归档：尽量恢复归档内目录位置。
+                innerFolder = String(address.dropFirst(diskPath.count + 1))
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\\"))
+                    .replacingOccurrences(of: "\\", with: "/")
+            } else {
+                model.open(url)
+            }
+            return
+        }
+        // 磁盘地址：指向归档文件则打开（历史里回到磁盘后再点归档地址的场景），
+        // 指向目录则进入；两者都失效时保持现状并提示，绝不把窗格打进错误态。
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: address, isDirectory: &isDirectory) else {
+            model.warn("地址已失效：\(address)")
+            return
+        }
+        if isDirectory.boolValue {
             inArchive = false
             currentDir = URL(fileURLWithPath: address)
             refreshLocal()
+        } else {
+            openArchive(URL(fileURLWithPath: address))
         }
         selected.removeAll()
     }
@@ -983,10 +1023,13 @@ struct PaneView: View {
                   urls.count == 1 {
             openArchive(first)
         } else {
+            var failed = 0
             for url in urls {
                 let target = currentDir.appendingPathComponent(url.lastPathComponent)
-                try? FileManager.default.copyItem(at: url, to: target)
+                do { try FileManager.default.copyItem(at: url, to: target) }
+                catch { failed += 1 }
             }
+            if failed > 0 { model.warn("\(failed) 个项目复制失败（目标可能已存在同名文件）。") }
             refreshLocal()
         }
     }
@@ -1036,10 +1079,17 @@ struct PaneView: View {
             chooseDestination(paths: expandedArchiveSelection)
         } else {
             guard let destination = chooseFolderPanel(title: "复制所选文件到…") else { return }
+            var failed = 0
             for url in selectedLocalURLs {
-                try? FileManager.default.copyItem(at: url, to: destination.appendingPathComponent(url.lastPathComponent))
+                do {
+                    try FileManager.default.copyItem(at: url, to: destination.appendingPathComponent(url.lastPathComponent))
+                } catch { failed += 1 }
             }
-            model.announce("已复制 \(selectedLocalURLs.count) 个项目到 \(destination.path)")
+            if failed > 0 {
+                model.warn("\(failed) 个项目复制失败（目标可能已存在同名文件）。")
+            } else {
+                model.announce("已复制 \(selectedLocalURLs.count) 个项目到 \(destination.path)")
+            }
         }
     }
 
@@ -1048,9 +1098,11 @@ struct PaneView: View {
             guard canEditArchive else { return }
             let targets = expandedArchiveSelection
             guard !targets.isEmpty, let destination = chooseFolderPanel(title: "从归档移出到…") else { return }
-            // Serial queue: extraction completes before the entries are deleted.
-            model.extract(to: destination, paths: targets, conflict: conflict, password: consumePassword())
-            model.delete(paths: targets, password: nil)
+            // 依赖组：解压失败时删除必须取消（否则「移动」在失败路径退化成「删除」）。
+            let group = UUID()
+            model.extract(to: destination, paths: targets, conflict: conflict,
+                          password: consumePassword(), group: group)
+            model.delete(paths: targets, password: nil, group: group)
             selected.removeAll()
         } else {
             guard let destination = chooseFolderPanel(title: "移动所选文件到…") else { return }
@@ -1387,18 +1439,25 @@ struct PaneView: View {
             // 另一窗格在磁盘目录：归档侧解压（移动 = 解压后从归档删除），本地侧拷贝/移动。
             if inArchive {
                 let targets = expandedArchiveSelection
-                model.extract(to: destination, paths: targets, conflict: conflict, password: consumePassword())
-                if move, canEditArchive { model.delete(paths: targets, password: nil) }
+                // 依赖组：解压失败时删除必须取消（移动退化成删除的数据丢失路径）。
+                let group = move ? UUID() : nil
+                model.extract(to: destination, paths: targets, conflict: conflict,
+                              password: consumePassword(), group: group)
+                if move, canEditArchive { model.delete(paths: targets, password: nil, group: group) }
                 selected.removeAll()
             } else {
+                var failed = 0
                 for url in selectedLocalURLs {
                     let target = destination.appendingPathComponent(url.lastPathComponent)
-                    if move {
-                        try? FileManager.default.moveItem(at: url, to: target)
-                    } else {
-                        try? FileManager.default.copyItem(at: url, to: target)
-                    }
+                    do {
+                        if move {
+                            try FileManager.default.moveItem(at: url, to: target)
+                        } else {
+                            try FileManager.default.copyItem(at: url, to: target)
+                        }
+                    } catch { failed += 1 }
                 }
+                if failed > 0 { model.warn("\(failed) 个项目操作失败（目标可能已存在同名文件）。") }
                 selected.removeAll()
                 refreshLocal()
             }

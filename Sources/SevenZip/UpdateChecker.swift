@@ -14,8 +14,20 @@ enum UpdateChecker {
         check(manual: false)
     }
 
+    /// 手动检查连点防抖：同一时间只允许一个手动检查在进行。
+    @MainActor private static var manualInFlight = false
+
     static func check(manual: Bool) {
         Task.detached {
+            if manual {
+                let duplicate = await MainActor.run { () -> Bool in
+                    if manualInFlight { return true }
+                    manualInFlight = true
+                    return false
+                }
+                if duplicate { return }
+            }
+            defer { if manual { Task { @MainActor in manualInFlight = false } } }
             do {
                 var request = URLRequest(url: apiURL)
                 request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -68,14 +80,20 @@ enum UpdateChecker {
     }
 
     /// 点分版本号逐段数值比较：1.10.0 > 1.9.9。
+    /// 预发布后缀（"1.2.0-rc1"）剥离数字段后视为同号的旧版（正式版 > 预发布）。
     static func isNewer(_ candidate: String, than current: String) -> Bool {
-        let a = candidate.split(separator: ".").map { Int($0) ?? 0 }
-        let b = current.split(separator: ".").map { Int($0) ?? 0 }
-        for index in 0..<max(a.count, b.count) {
-            let x = index < a.count ? a[index] : 0
-            let y = index < b.count ? b[index] : 0
+        func core(_ version: String) -> (nums: [Int], prerelease: Bool) {
+            let parts = version.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+            return (parts[0].split(separator: ".").map { Int($0) ?? 0 }, parts.count > 1)
+        }
+        let a = core(candidate)
+        let b = core(current)
+        for index in 0..<max(a.nums.count, b.nums.count) {
+            let x = index < a.nums.count ? a.nums[index] : 0
+            let y = index < b.nums.count ? b.nums[index] : 0
             if x != y { return x > y }
         }
+        if a.prerelease != b.prerelease { return !a.prerelease }
         return false
     }
 }

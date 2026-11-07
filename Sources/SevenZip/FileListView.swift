@@ -53,7 +53,13 @@ struct FileListView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let table = NSTableView()
+        // NSTableView 的右键菜单走 NSView.menu(for:)（delegate 没有对应回调），
+        // 用 MenuTableView 子类转发给 Coordinator，同 IconListView 的 MenuCollectionView。
+        let table = MenuTableView()
+        table.menuProvider = { [weak coordinator = context.coordinator, weak table] event in
+            guard let table else { return nil }
+            return coordinator?.menu(for: event, in: table)
+        }
         table.headerView = NSTableHeaderView()
         // Automatic row heights measure our constraint-built cells as ~2pt,
         // rendering every row invisible. A fixed row height is both correct
@@ -103,13 +109,19 @@ struct FileListView: NSViewRepresentable {
         table.gridStyleMask = gridLines ? [.solidHorizontalGridLineMask, .solidVerticalGridLineMask] : []
         table.reloadData()
         let indexes = rows.indices.filter { selection.contains(rows[$0].id) }
+        // 程序化选择同步也会触发 SelectionDidChange 通知，加标志位避免
+        // 状态刷新被误认为用户交互（双窗格下会盗取焦点）。
+        context.coordinator.isSyncingSelection = true
         table.selectRowIndexes(IndexSet(indexes), byExtendingSelection: false)
+        context.coordinator.isSyncingSelection = false
     }
 
     @MainActor
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         var parent: FileListView
         weak var table: NSTableView?
+        /// updateNSView 程序化同步选择期间为 true：跳过 onInteraction（防焦点盗取）。
+        var isSyncingSelection = false
 
         init(_ parent: FileListView) { self.parent = parent }
 
@@ -196,7 +208,7 @@ struct FileListView: NSViewRepresentable {
 
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard let table else { return }
-            parent.onInteraction()
+            if !isSyncingSelection { parent.onInteraction() }
             let selected = table.selectedRowIndexes
                 .filter { $0 < parent.rows.count }
                 .map { parent.rows[$0].id }
@@ -217,7 +229,9 @@ struct FileListView: NSViewRepresentable {
 
         // MARK: Context menu
 
-        func tableView(_ tableView: NSTableView, menuFor event: NSEvent) -> NSMenu? {
+        /// 由 MenuTableView.menu(for:) 转发而来（NSTableViewDelegate 并没有
+        /// menuFor 回调，直接挂在 Coordinator 上永远不会被系统调用）。
+        func menu(for event: NSEvent, in tableView: NSTableView) -> NSMenu? {
             let point = tableView.convert(event.locationInWindow, from: nil)
             let row = tableView.row(at: point)
             var target: FileListRow?
@@ -244,7 +258,12 @@ struct FileListView: NSViewRepresentable {
                 menuItem.target = self
                 menuItem.isEnabled = spec.enabled
                 menuItem.representedObject = Box(spec.action)
-                if spec.destructive { menuItem.attributedTitle = nil }
+                if spec.destructive, spec.enabled {
+                    // 危险操作红色显示（原代码 attributedTitle = nil 是空操作）。
+                    menuItem.attributedTitle = NSAttributedString(
+                        string: spec.title,
+                        attributes: [.foregroundColor: NSColor.systemRed])
+                }
                 menu.addItem(menuItem)
             }
             return menu
@@ -258,6 +277,14 @@ struct FileListView: NSViewRepresentable {
 
         @objc private func runMenuAction(_ sender: NSMenuItem) {
             (sender.representedObject as? Box)?.action()
+        }
+    }
+
+    /// 右键菜单走 NSView.menu(for:)，子类转发给 Coordinator（同 IconListView）。
+    private final class MenuTableView: NSTableView {
+        var menuProvider: ((NSEvent) -> NSMenu?)?
+        override func menu(for event: NSEvent) -> NSMenu? {
+            menuProvider?(event) ?? super.menu(for: event)
         }
     }
 }

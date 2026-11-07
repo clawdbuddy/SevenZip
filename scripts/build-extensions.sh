@@ -56,13 +56,15 @@ build_appex() {  # build_appex <名称> <模块名> <plist目录> <entitlements>
 }
 
 # Quick Look：空格预览归档清单。复用 ArchiveCore.swift（仅依赖 Foundation，
-# 含 7zz 清单解析与 GBK 名称恢复），直接编译进扩展。
+# 含 7zz 清单解析与 GBK 名称恢复）与 SpawnedProcess.swift（posix_spawn 启动器，
+# 避免 Foundation Process 的 NFD 归一化弄坏 NFC 文件名），直接编译进扩展。
 # 沙箱扩展只能执行自身 bundle 内的程序，故把 7zz 拷入扩展并以 sandbox+inherit 签署。
 build_appex SevenZipQuickLook SevenZipQuickLook \
     "$project_root/Extensions/QuickLookPreview" \
     "$project_root/Extensions/QuickLookPreview/Entitlements.plist" \
     "$project_root/Extensions/QuickLookPreview/Provider.swift" \
-    "$project_root/Sources/ArchiveCore/ArchiveCore.swift"
+    "$project_root/Sources/ArchiveCore/ArchiveCore.swift" \
+    "$project_root/Sources/SevenZip/SpawnedProcess.swift"
 ql_appex="$app_root/Contents/PlugIns/SevenZipQuickLook.appex"
 if [[ -x "$engine" ]]; then
     mkdir -p "$ql_appex/Contents/Resources/bin"

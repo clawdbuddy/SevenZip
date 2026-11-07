@@ -16,8 +16,15 @@ final class Controller: NSViewController {
         super.viewDidLoad()
         let items = (extensionContext?.inputItems as? [NSExtensionItem]) ?? []
         let providers = items.flatMap { $0.attachments ?? [] }
+        // extensionContext 强引用带走：VC 在异步取回期间被释放也必须完成请求，
+        // 否则 completeRequest 永不被调用，Finder 快速操作转圈到系统超时。
+        let context = extensionContext
         Self.collectFileURLs(from: providers) { [weak self] urls in
-            self?.handOff(urls)
+            guard let self else {
+                context?.completeRequest(returningItems: nil)
+                return
+            }
+            self.handOff(urls)
         }
     }
 

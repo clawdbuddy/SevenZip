@@ -103,7 +103,9 @@ final class AppMenuBuilder: NSObject {
         menu.addItem(viewItem)
         menu.addItem(.separator())
         menu.addItem(title: "双窗格", key: "", tag: "toggleDualPane")
-        menu.addItem(title: "切换窗格", key: "\t", tag: "switchPane")
+        // ⌘⇥ 会被系统应用切换器在 WindowServer 层拦截，永不触发；改用 ⌃⇥。
+        let switchPane = menu.addItem(title: "切换窗格", key: "\t", tag: "switchPane")
+        switchPane.keyEquivalentModifierMask = [.control]
         menu.addItem(title: "复制到另一窗格", key: "", tag: "copyToOtherPane")
         menu.addItem(title: "移动到另一窗格", key: "", tag: "moveToOtherPane")
         menu.addItem(.separator())
@@ -151,6 +153,10 @@ final class AppMenuBuilder: NSObject {
     private func makeWindowMenu() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "窗口")
+        // 关闭走响应链（target=nil → key window performClose）。文件菜单的
+        // 「关闭压缩包 ⌘W」在主窗口为 key 时优先匹配；其他窗口在前时
+        // 它被 validateMenuItem 禁用，⌘W 自然落到本项关掉当前窗口。
+        menu.addItem(withTitle: "关闭", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         menu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         menu.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         item.submenu = menu
@@ -239,6 +245,31 @@ extension NSMenu {
         if let stateKey { item.toolTip = stateKey.rawValue }
         addItem(item)
         return item
+    }
+}
+
+extension AppMenuBuilder: NSMenuItemValidation {
+    /// 作用于主窗口窗格内容的动作（删除/重命名/关闭压缩包等）。
+    /// 这些菜单项 target 写死为 AppMenuBuilder、不走响应链，若不做门控，
+    /// 用户在独立对话框里按 ⌘⌫/⌘W/⌘⏎ 等会越过 key window 直接触发
+    /// 主窗口的文件操作（含删除）——必须只在主窗口为 key 时可用。
+    private static let paneActionTags: Set<String> = [
+        "closeArchive", "selectAll", "deselectAll", "invertSelection",
+        "renameSelection", "deleteSelection", "refresh", "goUp", "toggleLog",
+    ]
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard let tag = menuItem.representedObject as? String else { return true }
+        let mainKey = MainWindowController.shared.window?.isKeyWindow == true
+        if Self.paneActionTags.contains(tag) { return mainKey }
+        switch tag {
+        case "switchPane", "copyToOtherPane", "moveToOtherPane":
+            // 跨窗格动作还要求双窗格已开启（单窗格时 F5/F6 无意义，
+            // 且另一端可能是已销毁窗格的冻结状态）。
+            return actions.dualPaneActive && mainKey
+        default:
+            return true
+        }
     }
 }
 
