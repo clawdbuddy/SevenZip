@@ -7,10 +7,15 @@ import ArchiveCore
 /// NSWindow（不用 WindowGroup，理由见 MainWindowController），SwiftUI 的
 /// .toolbar 只在 SwiftUI 场景里生效，NSHostingView 里拿不到真正的标题栏
 /// 工具栏。原生 NSToolbar 才能与标题栏融为一体（unified 风格）、拿到系统
-/// 的毛玻璃底、正确的工具栏项悬停高亮、右键菜单与拖拽重排行为。
+/// 的毛玻璃底、正确的悬停高亮、右键菜单与拖拽重排行为。
 ///
-/// 动作全部经 AppActions 转发到焦点窗格（与菜单同一套处理器），工具栏
-/// 只是入口的第二种呈现。
+/// 形态对齐 macOS 系统应用（访达 / Xcode / Keka）：
+/// - 一律使用标准 NSToolbarItem + SF Symbols，不用自定义按钮，保证
+///   尺寸、间距、悬停高亮与系统一致；
+/// - 图标即按钮，文字说明走悬停提示；
+/// - 右侧用弹性空间分隔「设置类」控件；
+/// - 可用性由焦点窗格状态决定（macOS 不会自动回调 validateToolbarItem，
+///   故主动写 item.isEnabled，并在动作侧二次校验）。
 @MainActor
 final class MainToolbarController: NSObject, NSToolbarDelegate {
 
@@ -28,13 +33,19 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
         static let dualPane = NSToolbarItem.Identifier("SevenZip.dualPane")
     }
 
-    /// 工具项与 AppActions.PaneTool 的对应关系。
-    private static let toolIdentifiers: [(id: NSToolbarItem.Identifier, tool: AppActions.PaneTool)] = [
-        (ID.add, .add), (ID.extract, .extract), (ID.test, .test),
-        (ID.copy, .copy), (ID.move, .move), (ID.delete, .delete), (ID.info, .info),
+    /// 工具项定义：标识、SF Symbol、名称、悬停说明。
+    private static let tools: [(id: NSToolbarItem.Identifier, tool: AppActions.PaneTool,
+                                symbol: String, title: String, help: String)] = [
+        (ID.add, .add, "plus", "添加", "把所选文件加入压缩包"),
+        (ID.extract, .extract, "square.and.arrow.up", "释放", "从归档中释放所选项目"),
+        (ID.test, .test, "checkmark.seal", "测试", "测试归档完整性"),
+        (ID.copy, .copy, "doc.on.doc", "复制", "复制所选项目"),
+        (ID.move, .move, "arrow.right.doc.on.clipboard", "移动", "移动所选项目"),
+        (ID.delete, .delete, "trash", "删除", "删除所选项目"),
+        (ID.info, .info, "info.circle", "信息", "查看详细信息"),
     ]
 
-    /// 文件冲突策略弹出按钮（需要自定义视图，标准工具项放不下）。
+    /// 文件冲突策略弹出按钮（macOS 工具栏里的设置类控件，用紧凑弹出菜单）。
     private final class ConflictItem: NSToolbarItem {
         let popup = NSPopUpButton(frame: .zero, pullsDown: false)
 
@@ -43,10 +54,14 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
             for policy in ConflictPolicy.allCases {
                 popup.addItem(withTitle: policy.title)
             }
+            popup.bezelStyle = .rounded
+            popup.controlSize = .regular
+            popup.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
             popup.target = self
             popup.action = #selector(changed)
             view = popup
             paletteLabel = "文件冲突"
+            toolTip = "解压遇到同名文件时的处理方式"
         }
 
         required init?(coder: NSCoder) { fatalError("init(coder:) 未实现") }
@@ -71,33 +86,14 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
         }
     }
 
-    /// 工具项 → 动作接收者的映射（NSToolbarItem 的 target 是弱引用，须强持有）。
-    private var targets: [NSToolbarItem.Identifier: ToolTarget] = [:]
-
-    /// 双窗格开关（7zFM F9）——需要开/关两种状态，用自定义按钮。
-    private final class DualPaneItem: NSToolbarItem {
-        let button = NSButton(image: NSImage(systemSymbolName: "rectangle.split.2x1",
-                                             accessibilityDescription: "双窗格") ?? NSImage(),
-                              target: nil, action: nil)
-
-        override init(itemIdentifier: NSToolbarItem.Identifier) {
-            super.init(itemIdentifier: itemIdentifier)
-            button.bezelStyle = .inline
-            button.setButtonType(.toggle)
-            button.toolTip = "双窗格（⌃⌥T / F9）"
-            button.target = self
-            button.action = #selector(fire)
-            view = button
-            paletteLabel = "双窗格"
-        }
-
-        required init?(coder: NSCoder) { fatalError("init(coder:) 未实现") }
-
-        @objc private func fire() {
-            AppActions.shared.toggleDualPane()
-        }
+    /// 双窗格开关：标准工具项，图标随开合切换（macOS 侧边栏开关的常见做法）。
+    @MainActor
+    private final class DualPaneTarget: NSObject {
+        @objc func fire() { AppActions.shared.toggleDualPane() }
     }
 
+    /// 工具项 → 动作接收者的映射（NSToolbarItem 的 target 是弱引用，须强持有）。
+    private var targets: [NSToolbarItem.Identifier: NSObject] = [:]
 
     // MARK: - 构造
 
@@ -129,33 +125,28 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
         case ID.conflict:
             return ConflictItem(itemIdentifier: identifier)
         case ID.dualPane:
-            return DualPaneItem(itemIdentifier: identifier)
-        default:
-            guard let entry = Self.toolIdentifiers.first(where: { $0.id == identifier }) else { return nil }
-            let symbol: String
-            let title: String
-            let help: String
-            switch entry.tool {
-            case .add:
-                symbol = "plus"; title = "添加"; help = "把所选文件加入压缩包"
-            case .extract:
-                symbol = "arrow.up.doc"; title = "释放"; help = "从归档中释放所选项目"
-            case .test:
-                symbol = "checkmark.circle"; title = "测试"; help = "测试归档完整性"
-            case .copy:
-                symbol = "doc.on.doc"; title = "复制"; help = "复制所选项目"
-            case .move:
-                symbol = "rectangle.portrait.and.arrow.right"; title = "移动"; help = "移动所选项目"
-            case .delete:
-                symbol = "trash"; title = "删除"; help = "删除所选项目"
-            case .info:
-                symbol = "info.circle"; title = "信息"; help = "查看详细信息"
-            }
             let item = NSToolbarItem(itemIdentifier: identifier)
-            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
-            item.label = title
-            item.paletteLabel = title
-            item.toolTip = help
+            item.image = Self.dualPaneSymbol()
+            item.label = "双窗格"
+            item.paletteLabel = "双窗格"
+            item.toolTip = "双窗格（⌃⌥T / F9）"
+            item.isEnabled = true
+            let target = DualPaneTarget()
+            targets[identifier] = target
+            item.target = target
+            item.action = #selector(DualPaneTarget.fire)
+            return item
+        default:
+            guard let entry = Self.tools.first(where: { $0.id == identifier }) else { return nil }
+            let item = NSToolbarItem(itemIdentifier: identifier)
+            // SF Symbol 用模板图：系统按工具栏规则着色（正常/高亮/置灰）。
+            if let image = NSImage(systemSymbolName: entry.symbol, accessibilityDescription: entry.title) {
+                image.isTemplate = true
+                item.image = image
+            }
+            item.label = entry.title
+            item.paletteLabel = entry.title
+            item.toolTip = entry.help
             // 项是延迟创建的：创建时即按当前状态置灰，避免先亮后暗。
             item.isEnabled = AppActions.shared.paneToolState.isEnabled(entry.tool)
             let target = ToolTarget(tool: entry.tool)
@@ -174,13 +165,13 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
     func applyState(toolbar: NSToolbar) {
         let state = AppActions.shared.paneToolState
         for item in toolbar.items {
-            if let entry = Self.toolIdentifiers.first(where: { $0.id == item.itemIdentifier }) {
+            if let entry = Self.tools.first(where: { $0.id == item.itemIdentifier }) {
                 item.isEnabled = state.isEnabled(entry.tool)
             } else if let conflict = item as? ConflictItem {
                 conflict.popup.selectItem(withTitle: AppActions.shared.conflictPolicy.title)
                 conflict.popup.isEnabled = state.extract
-            } else if let dual = item as? DualPaneItem {
-                dual.button.state = AppActions.shared.dualPaneActive ? .on : .off
+            } else if item.itemIdentifier == ID.dualPane {
+                item.image = Self.dualPaneSymbol()
             }
         }
     }
@@ -188,9 +179,17 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
     /// AppKit 原生校验入口（系统偶尔会问，返回当前状态）。
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
         let state = AppActions.shared.paneToolState
-        if let entry = Self.toolIdentifiers.first(where: { $0.id == item.itemIdentifier }) {
+        if let entry = Self.tools.first(where: { $0.id == item.itemIdentifier }) {
             return state.isEnabled(entry.tool)
         }
         return true
+    }
+
+    /// 双窗格开合用不同图标（macOS 侧边栏开关惯例）。
+    private static func dualPaneSymbol() -> NSImage? {
+        let name = AppActions.shared.dualPaneActive ? "rectangle.split.2x1.fill" : "rectangle.split.2x1"
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: "双窗格")
+        image?.isTemplate = true
+        return image
     }
 }

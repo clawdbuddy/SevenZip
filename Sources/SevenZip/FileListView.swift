@@ -104,6 +104,8 @@ struct FileListView: NSViewRepresentable {
         scroll.autohidesScrollers = true
         // macOS 11+ 样式：滚动条覆盖在内容上（Finder 同款），而非占位的老式滚动条。
         scroll.scrollerStyle = .overlay
+        // 焦点环由外层滚动视图绘制（表格获焦时，环画在列表区四周），一并关掉。
+        scroll.focusRingType = .none
         context.coordinator.table = table
         return scroll
     }

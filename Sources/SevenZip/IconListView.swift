@@ -47,6 +47,8 @@ struct IconListView: NSViewRepresentable {
         scroll.autohidesScrollers = true
         // macOS 11+ 样式：滚动条覆盖在内容上（Finder 同款）。
         scroll.scrollerStyle = .overlay
+        // 焦点环由外层滚动视图绘制，一并关掉（同访达）。
+        scroll.focusRingType = .none
         context.coordinator.collection = collection
 
         // 双击 = 激活（进入文件夹 / 打开文件）。

@@ -278,9 +278,11 @@ struct PaneView: View {
             if showLog { logDrawer }
         }
         .frame(minWidth: 420, minHeight: 480)
-        // 焦点窗格高亮边框（双窗格模式下区分作用目标）。
+        // 焦点窗格高亮边框：只在双窗格时有意义（区分作用目标）。
+        // 单窗格时若也画，会在窗口内容区四周留一圈系统强调色蓝边（访达无此效果）。
         .overlay(RoundedRectangle(cornerRadius: 2)
-            .stroke(isFocused ? Color.accentColor : Color.clear, lineWidth: 2))
+            .stroke(isFocused && actions.dualPaneActive ? Color.accentColor : Color.clear,
+                    lineWidth: 2))
         .environmentObject(model)   // 子视图与 sheet 统一取本窗格自己的 model
         .contentShape(Rectangle())
         .onTapGesture { if !isFocused { onFocus() } }
