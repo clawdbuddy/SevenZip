@@ -931,6 +931,7 @@ struct PaneView: View {
                 innerFolder = innerFolder.components(separatedBy: "/").dropLast().joined(separator: "/")
             } else if let context = nestingStack.popLast() {
                 // 嵌套根目录的 ".."：回到外层归档并清理本层临时文件。
+                TempDirectoryRegistry.unregister(context.tempDir)
                 try? FileManager.default.removeItem(at: context.tempDir)
                 innerFolder = context.innerFolder
                 model.open(context.outerURL, password: context.password)
@@ -952,6 +953,7 @@ struct PaneView: View {
     /// 打开/关闭/跳转归档前调用：清掉所有嵌套层及其临时目录。
     private func clearNesting() {
         for context in nestingStack {
+            TempDirectoryRegistry.unregister(context.tempDir)
             try? FileManager.default.removeItem(at: context.tempDir)
         }
         nestingStack.removeAll()

@@ -2,6 +2,22 @@ import ArchiveCore
 import Combine
 import Foundation
 
+/// 应用级临时目录登记表：预览/嵌套/转换的临时目录在创建时登记、删除时注销。
+/// 主窗口关闭或应用退出时统一清扫——清理不依赖模型存活（闭包捕获的模型
+/// 可能已随界面销毁，自身 deinit 不可靠）。
+@MainActor
+enum TempDirectoryRegistry {
+    private(set) static var dirs: Set<URL> = []
+
+    static func register(_ url: URL) { dirs.insert(url.standardizedFileURL) }
+    static func unregister(_ url: URL) { dirs.remove(url.standardizedFileURL) }
+
+    static func cleanupAll() {
+        for url in dirs { try? FileManager.default.removeItem(at: url) }
+        dirs.removeAll()
+    }
+}
+
 @MainActor
 final class ArchiveModel: ObservableObject {
     @Published private(set) var archiveURL: URL?
@@ -211,6 +227,7 @@ final class ArchiveModel: ObservableObject {
             let invocation = try ArchiveCommands.extract(url, to: directory,
                                                          paths: [entry.enginePath], conflict: .skip, password: password)
             previewFolders.append(directory)
+            TempDirectoryRegistry.register(directory)
             enqueue(invocation, completion: .nested(directory, path, ArchiveListing.legacyNameRestoreMap(entries)))
         } catch { report(error.localizedDescription) }
     }
@@ -237,6 +254,7 @@ final class ArchiveModel: ObservableObject {
             .appendingPathComponent("SevenZip-convert-\(UUID().uuidString)", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+            TempDirectoryRegistry.register(staging)
             let command = try ArchiveCommands.extract(source, to: staging, password: password)
             enqueue(command, completion: .conversionExtracted(staging, destination, format, password, restoreMap))
         } catch { report(error.localizedDescription) }
@@ -256,6 +274,7 @@ final class ArchiveModel: ObservableObject {
             let invocation = try ArchiveCommands.extract(url, to: directory,
                                                          paths: [entry.enginePath], conflict: .skip, password: password)
             previewFolders.append(directory)
+            TempDirectoryRegistry.register(directory)
             enqueue(invocation, completion: .preview(directory, path, ArchiveListing.legacyNameRestoreMap(entries)))
         } catch { report(error.localizedDescription) }
     }
@@ -481,10 +500,10 @@ final class ArchiveModel: ObservableObject {
         guard code == 0 else {
             switch job.completion {
             case .conversionExtracted(let staging, _, _, _, _), .converted(_, let staging):
-                try? FileManager.default.removeItem(at: staging)
+                removeTempDirectory(staging)
             case .preview(let folder, _, _), .nested(let folder, _, _):
                 // 失败时清理已创建的临时目录，避免泄漏。
-                try? FileManager.default.removeItem(at: folder)
+                removeTempDirectory(folder)
             default: break
             }
             // 「移出归档」等依赖链：前置任务失败，取消同组的后续任务
@@ -603,7 +622,7 @@ final class ArchiveModel: ObservableObject {
         case .conversionExtracted(let staging, let destination, let format, let password, let restoreMap):
             guard !containsSymlinks(staging) else {
                 report("转换中止：临时解压内容包含符号链接，需在隔离环境中手工处理。")
-                try? FileManager.default.removeItem(at: staging)
+                removeTempDirectory(staging)
                 launchNext()
                 return
             }
@@ -613,7 +632,7 @@ final class ArchiveModel: ObservableObject {
                                                                          includingPropertiesForKeys: nil)
                 guard !files.isEmpty else {
                     report("空归档的格式转换暂不支持。")
-                    try? FileManager.default.removeItem(at: staging)
+                    removeTempDirectory(staging)
                     launchNext()
                     return
                 }
@@ -625,10 +644,10 @@ final class ArchiveModel: ObservableObject {
                 enqueue(invocation, completion: .converted(destination, staging))
             } catch {
                 report(error.localizedDescription)
-                try? FileManager.default.removeItem(at: staging)
+                removeTempDirectory(staging)
             }
         case .converted(let destination, let staging):
-            try? FileManager.default.removeItem(at: staging)
+            removeTempDirectory(staging)
             status = "格式转换完成：\(destination.lastPathComponent)"
         case .tested(let url):
             status = url.map { "完整性校验通过：\($0.lastPathComponent)" } ?? "归档完整性校验通过"
@@ -650,8 +669,14 @@ final class ArchiveModel: ObservableObject {
                 !protected.contains { $0 == dir.path || $0.hasPrefix(dir.path + "/") }
             }) else { return }
             previewFolders.removeAll { $0 == victim }
-            try? FileManager.default.removeItem(at: victim)
+            removeTempDirectory(victim)
         }
+    }
+
+    /// 删除已登记的临时目录并同步注销（保持登记表精确，退出清扫不重复删）。
+    private func removeTempDirectory(_ url: URL) {
+        TempDirectoryRegistry.unregister(url)
+        try? FileManager.default.removeItem(at: url)
     }
 
     private func report(_ message: String) {

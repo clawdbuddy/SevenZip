@@ -45,6 +45,10 @@ final class MainWindowController: NSObject, NSWindowDelegate {
                 NSEvent.removeMonitor(monitor)
                 self.keyMonitor = nil
             }
+            // 本窗口的嵌套/预览临时目录随窗口销毁；登记册兜底清理。
+            // 窗口关闭即放弃该窗口发起的后台任务（如转换），其暂存目录
+            // 一并删除——任务随后的收尾写入会失败并落入错误分支，无副作用。
+            TempDirectoryRegistry.cleanupAll()
         }
     }
 

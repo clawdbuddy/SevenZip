@@ -82,6 +82,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    /// 退出前兜底清理所有已登记的临时目录（预览/嵌套/转换暂存）。
+    /// 正常路径在任务完成时已删除并注销，这里只清残留（如窗口被直接关闭）。
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated { TempDirectoryRegistry.cleanupAll() }
+    }
+
     @objc func serviceOpenArchives(_ pboard: NSPasteboard, userData: String?,
                                    error: AutoreleasingUnsafeMutablePointer<NSString?>) {
         forward(pboard, error: error) { AppActions.shared.routeOpenFiles($0) }
