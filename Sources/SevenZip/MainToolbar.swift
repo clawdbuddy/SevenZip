@@ -28,7 +28,6 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
         static let move = NSToolbarItem.Identifier("SevenZip.move")
         static let delete = NSToolbarItem.Identifier("SevenZip.delete")
         static let info = NSToolbarItem.Identifier("SevenZip.info")
-        static let flexible = NSToolbarItem.Identifier("SevenZip.flexible")
         static let conflict = NSToolbarItem.Identifier("SevenZip.conflict")
         static let dualPane = NSToolbarItem.Identifier("SevenZip.dualPane")
     }
@@ -116,8 +115,15 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        // 左侧是主操作（添加/释放/测试/复制/移动/删除/信息），右侧是设置类
+        // 控件（冲突策略、双窗格）——与 macOS 应用把「设置」放尾端的惯例一致。
+        //
+        // 分隔用系统内置的 .space（固定间距）而不是自定义标识符：自定义标识符
+        // 不会被 AppKit 当成间隔项处理（delegate 回调返回 nil → 项被丢弃）。
+        // 也不用 .flexibleSpace：窗口标题会占用工具栏的前导区域，弹性空间
+        // 在这个位置无处可伸展，实测会塌成 1pt。
         [ID.add, ID.extract, ID.test, ID.copy, ID.move, ID.delete, ID.info,
-         ID.flexible, ID.conflict, ID.dualPane]
+         .space, ID.conflict, ID.dualPane]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -127,6 +133,8 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch identifier {
+        case .flexibleSpace, .space:
+            return nil
         case ID.conflict:
             return ConflictItem(itemIdentifier: identifier)
         case ID.dualPane:

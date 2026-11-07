@@ -34,14 +34,18 @@ final class AppMenuBuilder: NSObject {
     private func makeAppMenu() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "七压")
-        menu.addItem(title: "关于七压", key: "", tag: "about")
+        menu.addItem(title: "关于七压", key: "", tag: "about", symbol: "info.circle")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "隐藏七压", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hide = menu.addItem(withTitle: "隐藏七压", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        hide.image = NSMenu.symbolImage("eye.slash")
         let hideOthers = menu.addItem(withTitle: "隐藏其他", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
         hideOthers.keyEquivalentModifierMask = [.command, .option]
-        menu.addItem(withTitle: "全部显示", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        hideOthers.image = NSMenu.symbolImage("eye.slash")
+        let showAll = menu.addItem(withTitle: "全部显示", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        showAll.image = NSMenu.symbolImage("rectangle.stack")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "退出七压", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = menu.addItem(withTitle: "退出七压", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.image = NSMenu.symbolImage("power")
         item.submenu = menu
         return item
     }
@@ -49,10 +53,10 @@ final class AppMenuBuilder: NSObject {
     private func makeFileMenu() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "文件")
-        menu.addItem(title: "打开压缩包…", key: "o", tag: "openArchive")
-        menu.addItem(title: "创建压缩包…", key: "n", tag: "createArchive")
+        menu.addItem(title: "打开压缩包…", key: "o", tag: "openArchive", symbol: "folder")
+        menu.addItem(title: "创建压缩包…", key: "n", tag: "createArchive", symbol: "archivebox")
         menu.addItem(.separator())
-        menu.addItem(title: "关闭压缩包", key: "w", tag: "closeArchive")
+        menu.addItem(title: "关闭压缩包", key: "w", tag: "closeArchive", symbol: "xmark")
         item.submenu = menu
         return item
     }
@@ -61,26 +65,34 @@ final class AppMenuBuilder: NSObject {
         let item = NSMenuItem()
         let menu = NSMenu(title: "编辑")
         // 标准编辑项：走响应链（target=nil），供对话框/文本框使用。
-        menu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        let undo = menu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        undo.image = NSMenu.symbolImage("arrow.uturn.backward")
         let redo = menu.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "z")
         redo.keyEquivalentModifierMask = [.command, .shift]
+        redo.image = NSMenu.symbolImage("arrow.uturn.forward")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        menu.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        menu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        menu.addItem(withTitle: "粘贴并匹配样式", action: Selector(("pasteAsPlainText:")), keyEquivalent: "")
-        menu.addItem(withTitle: "删除", action: #selector(NSText.delete(_:)), keyEquivalent: "")
-        menu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let cut = menu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        cut.image = NSMenu.symbolImage("scissors")
+        let copy = menu.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        copy.image = NSMenu.symbolImage("doc.on.doc")
+        let paste = menu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        paste.image = NSMenu.symbolImage("doc.on.clipboard")
+        let pastePlain = menu.addItem(withTitle: "粘贴并匹配样式", action: Selector(("pasteAsPlainText:")), keyEquivalent: "")
+        pastePlain.image = NSMenu.symbolImage("doc.on.clipboard")
+        let del = menu.addItem(withTitle: "删除", action: #selector(NSText.delete(_:)), keyEquivalent: "")
+        del.image = NSMenu.symbolImage("trash")
+        let selectAll = menu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        selectAll.image = NSMenu.symbolImage("checkmark.circle")
         menu.addItem(.separator())
         // 7zFM 文件列表编辑（原 SwiftUI 菜单项，作用于焦点窗格）。
-        menu.addItem(title: "全选文件", key: "", tag: "selectAll")
-        let deselect = menu.addItem(title: "取消选择", key: "a", tag: "deselectAll")
+        menu.addItem(title: "全选文件", key: "", tag: "selectAll", symbol: "checkmark.circle")
+        let deselect = menu.addItem(title: "取消选择", key: "a", tag: "deselectAll", symbol: "circle.slash")
         deselect.keyEquivalentModifierMask = [.command, .shift]
-        menu.addItem(title: "反向选择", key: "", tag: "invertSelection")
+        menu.addItem(title: "反向选择", key: "", tag: "invertSelection", symbol: "selection.pin.in.out")
         menu.addItem(.separator())
-        let rename = menu.addItem(title: "重命名…", key: "\r", tag: "renameSelection")
+        let rename = menu.addItem(title: "重命名…", key: "\r", tag: "renameSelection", symbol: "pencil")
         rename.keyEquivalentModifierMask = [.command]
-        let delete = menu.addItem(title: "删除…", key: "\u{7f}", tag: "deleteSelection")
+        let delete = menu.addItem(title: "删除…", key: "\u{7f}", tag: "deleteSelection", symbol: "trash")
         delete.keyEquivalentModifierMask = [.command]
         item.submenu = menu
         return item
@@ -89,25 +101,26 @@ final class AppMenuBuilder: NSObject {
     private func makeViewMenu() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "查看")
-        menu.addItem(title: "刷新", key: "r", tag: "refresh")
-        let up = menu.addItem(title: "返回上级目录", key: String(Character(UnicodeScalar(NSUpArrowFunctionKey)!)), tag: "goUp")
+        menu.addItem(title: "刷新", key: "r", tag: "refresh", symbol: "arrow.clockwise")
+        let up = menu.addItem(title: "返回上级目录", key: String(Character(UnicodeScalar(NSUpArrowFunctionKey)!)), tag: "goUp", symbol: "arrow.up")
         up.keyEquivalentModifierMask = [.command]
         menu.addItem(.separator())
-        menu.addItem(title: "平铺视图", key: "", tag: "toggleFlatView", stateKey: .flatView)
+        menu.addItem(title: "平铺视图", key: "", tag: "toggleFlatView", stateKey: .flatView, symbol: "rectangle.grid.1x2")
         // 视图模式（单选）
         let viewMenu = NSMenu(title: "视图")
-        viewMenu.addItem(title: "详细资料", key: "", tag: "viewList", stateKey: .viewList)
-        viewMenu.addItem(title: "大图标", key: "", tag: "viewIcons", stateKey: .viewIcons)
+        viewMenu.addItem(title: "详细资料", key: "", tag: "viewList", stateKey: .viewList, symbol: "list.bullet")
+        viewMenu.addItem(title: "大图标", key: "", tag: "viewIcons", stateKey: .viewIcons, symbol: "square.grid.2x2")
         let viewItem = NSMenuItem(title: "视图", action: nil, keyEquivalent: "")
         viewItem.submenu = viewMenu
+        viewItem.image = NSMenu.symbolImage("square.grid.2x2")
         menu.addItem(viewItem)
         menu.addItem(.separator())
-        menu.addItem(title: "双窗格", key: "", tag: "toggleDualPane")
+        menu.addItem(title: "双窗格", key: "", tag: "toggleDualPane", symbol: "rectangle.split.2x1")
         // ⌘⇥ 会被系统应用切换器在 WindowServer 层拦截，永不触发；改用 ⌃⇥。
-        let switchPane = menu.addItem(title: "切换窗格", key: "\t", tag: "switchPane")
+        let switchPane = menu.addItem(title: "切换窗格", key: "\t", tag: "switchPane", symbol: "arrow.left.arrow.right")
         switchPane.keyEquivalentModifierMask = [.control]
-        menu.addItem(title: "复制到另一窗格", key: "", tag: "copyToOtherPane")
-        menu.addItem(title: "移动到另一窗格", key: "", tag: "moveToOtherPane")
+        menu.addItem(title: "复制到另一窗格", key: "", tag: "copyToOtherPane", symbol: "doc.on.doc")
+        menu.addItem(title: "移动到另一窗格", key: "", tag: "moveToOtherPane", symbol: "arrow.up.forward.app")
         menu.addItem(.separator())
         // 外观（单选）
         let appearanceMenu = NSMenu(title: "外观")
@@ -116,10 +129,11 @@ final class AppMenuBuilder: NSObject {
         appearanceMenu.addItem(title: "深色", key: "", tag: "appearanceDark", stateKey: .appearanceDark)
         let appearanceItem = NSMenuItem(title: "外观", action: nil, keyEquivalent: "")
         appearanceItem.submenu = appearanceMenu
+        appearanceItem.image = NSMenu.symbolImage("sun.max")
         menu.addItem(appearanceItem)
-        menu.addItem(title: "显示网格线", key: "", tag: "toggleGridLines", stateKey: .gridLines)
+        menu.addItem(title: "显示网格线", key: "", tag: "toggleGridLines", stateKey: .gridLines, symbol: "grid")
         menu.addItem(.separator())
-        menu.addItem(title: "运行日志", key: "l", tag: "toggleLog")
+        menu.addItem(title: "运行日志", key: "l", tag: "toggleLog", symbol: "doc.text")
         menu.delegate = self
         viewMenu.delegate = self
         appearanceMenu.delegate = self
@@ -130,9 +144,9 @@ final class AppMenuBuilder: NSObject {
     private func makeToolsMenu() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "工具")
-        menu.addItem(title: "批量解压…", key: "", tag: "batchExtract")
-        menu.addItem(title: "批量压缩…", key: "", tag: "batchCompress")
-        menu.addItem(title: "格式转换…", key: "", tag: "convert")
+        menu.addItem(title: "批量解压…", key: "", tag: "batchExtract", symbol: "square.and.arrow.down")
+        menu.addItem(title: "批量压缩…", key: "", tag: "batchCompress", symbol: "plus")
+        menu.addItem(title: "格式转换…", key: "", tag: "convert", symbol: "arrow.triangle.2.circlepath")
         menu.addItem(.separator())
         let checksumMenu = NSMenu(title: "计算校验和")
         for algo in ["CRC32", "CRC64", "SHA1", "SHA256", "SHA512", "BLAKE2sp"] {
@@ -140,12 +154,13 @@ final class AppMenuBuilder: NSObject {
         }
         let checksumItem = NSMenuItem(title: "计算校验和", action: nil, keyEquivalent: "")
         checksumItem.submenu = checksumMenu
+        checksumItem.image = NSMenu.symbolImage("sum")
         menu.addItem(checksumItem)
-        menu.addItem(title: "输入压缩包密码…", key: "", tag: "enterPassword")
+        menu.addItem(title: "输入压缩包密码…", key: "", tag: "enterPassword", symbol: "lock")
         menu.addItem(.separator())
-        menu.addItem(title: "性能测试（Benchmark）…", key: "", tag: "benchmark")
+        menu.addItem(title: "性能测试（Benchmark）…", key: "", tag: "benchmark", symbol: "gauge.with.dots.needle.67percent")
         menu.addItem(.separator())
-        menu.addItem(title: "文件类型关联…", key: "", tag: "fileAssociation")
+        menu.addItem(title: "文件类型关联…", key: "", tag: "fileAssociation", symbol: "folder.badge.gearshape")
         item.submenu = menu
         return item
     }
@@ -156,9 +171,12 @@ final class AppMenuBuilder: NSObject {
         // 关闭走响应链（target=nil → key window performClose）。文件菜单的
         // 「关闭压缩包 ⌘W」在主窗口为 key 时优先匹配；其他窗口在前时
         // 它被 validateMenuItem 禁用，⌘W 自然落到本项关掉当前窗口。
-        menu.addItem(withTitle: "关闭", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        menu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        menu.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        let close = menu.addItem(withTitle: "关闭", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        close.image = NSMenu.symbolImage("xmark")
+        let mini = menu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        mini.image = NSMenu.symbolImage("minus")
+        let zoom = menu.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        zoom.image = NSMenu.symbolImage("arrow.up.left.and.arrow.down.right")
         item.submenu = menu
         NSApp.windowsMenu = menu   // 系统自动追加窗口列表与「全部移到前面」
         return item
@@ -167,12 +185,12 @@ final class AppMenuBuilder: NSObject {
     private func makeHelpMenu() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "帮助")
-        menu.addItem(title: "检查更新…", key: "", tag: "checkUpdate")
-        menu.addItem(title: "启动时检查更新", key: "", tag: "toggleCheckUpdates", stateKey: .checkUpdates)
+        menu.addItem(title: "检查更新…", key: "", tag: "checkUpdate", symbol: "arrow.down.circle")
+        menu.addItem(title: "启动时检查更新", key: "", tag: "toggleCheckUpdates", stateKey: .checkUpdates, symbol: "arrow.down.circle")
         menu.addItem(.separator())
-        menu.addItem(title: "重置所有设置…", key: "", tag: "resetSettings")
+        menu.addItem(title: "重置所有设置…", key: "", tag: "resetSettings", symbol: "arrow.counterclockwise")
         menu.addItem(.separator())
-        menu.addItem(title: "关于七压", key: "", tag: "about")
+        menu.addItem(title: "关于七压", key: "", tag: "about", symbol: "questionmark.circle")
         menu.delegate = self
         item.submenu = menu
         return item
@@ -237,14 +255,43 @@ final class AppMenuBuilder: NSObject {
 extension NSMenu {
     @MainActor @discardableResult
     fileprivate func addItem(title: String, key: String, tag: String,
-                             stateKey: AppMenuBuilder.StateKey? = nil) -> NSMenuItem {
+                             stateKey: AppMenuBuilder.StateKey? = nil,
+                             symbol: String? = nil) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: #selector(AppMenuBuilder.dispatched(_:)),
                               keyEquivalent: key)
         item.target = AppMenuBuilder.shared
         item.representedObject = tag
         if let stateKey { item.toolTip = stateKey.rawValue }
+        if let symbol { item.image = NSMenu.symbolImage(symbol) }
         addItem(item)
         return item
+    }
+
+    /// 菜单项图标：模板图，由系统按菜单的深浅色着色。
+    ///
+    /// 菜单栏本身没有图标位，图标是加在每一项的文字左侧——这正是 macOS
+    /// 菜单的常规形态（系统「显示/视图/工具」类菜单都这么做），也让
+    /// 菜单文字与工具栏图标一一对应。
+    ///
+    /// SF Symbol 的原始尺寸各不相同（14~21pt，直接用会让一列菜单图标
+    /// 大小参差），这里统一缩放进 16×16 的方框，与系统菜单图标同规格。
+    @MainActor
+    static func symbolImage(_ name: String) -> NSImage? {
+        guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil) else {
+            return nil
+        }
+        let box = NSSize(width: 16, height: 16)
+        let scale = min(box.width / symbol.size.width, box.height / symbol.size.height, 1.0)
+        let drawn = NSSize(width: symbol.size.width * scale, height: symbol.size.height * scale)
+        let image = NSImage(size: box)
+        image.lockFocus()
+        symbol.draw(in: NSRect(x: (box.width - drawn.width) / 2,
+                               y: (box.height - drawn.height) / 2,
+                               width: drawn.width, height: drawn.height),
+                    from: .zero, operation: .sourceOver, fraction: 1)
+        image.unlockFocus()
+        image.isTemplate = true
+        return image
     }
 }
 

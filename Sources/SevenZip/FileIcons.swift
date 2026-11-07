@@ -42,13 +42,17 @@ enum FileIcons {
         return Icon(image: systemIcon(type), tint: nil)
     }
 
-    /// 压缩包图标：系统有对应图标文件的用系统图标（.zip），否则用 archivebox。
+    /// 压缩包图标：zip 用系统压缩包图标（拉链纸箱），其余压缩格式用系统的
+    /// 通用归档箱图标。
+    ///
+    /// 不用 SF Symbol 的 archivebox：那是空心描边图形，和系统实心归档箱
+    /// 并排放会显得不是一套。
     private static func archiveIcon(_ row: FileListRow) -> Icon {
         let ext = (row.name as NSString).pathExtension.lowercased()
         if ext == "zip" {
             return Icon(image: systemIcon(.zip), tint: nil)
         }
-        return Icon(image: symbol("archivebox"), tint: .controlAccentColor)
+        return Icon(image: systemIcon(.archive), tint: nil)
     }
 
     /// 文件夹：系统真实文件夹图标（访达的蓝色渐层文件夹）。
