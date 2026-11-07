@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ArchiveCore
 
 /// Bridge between the macOS menu bar (owned by the App) and ContentView.
 /// ContentView installs its handlers on appear; menu commands invoke them.
@@ -45,6 +46,45 @@ final class AppActions: ObservableObject {
     /// 焦点窗格是否有打开的归档（PaneView 同步；菜单据此门控「关闭压缩包 ⌘W」，
     /// 无归档时禁用该键等价才会落到窗口菜单的「关闭」）。
     var archiveOpen = false
+
+    // MARK: - 原生工具栏（macOS 风格：工具栏在标题栏内，与标题一体）
+
+    /// 窗口工具栏上的操作（对应原 SwiftUI 工具栏行）。
+    enum PaneTool: String, CaseIterable {
+        case add, extract, test, copy, move, delete, info
+    }
+
+    /// 各工具的可用状态（由焦点窗格同步；工具栏据此置灰）。
+    struct PaneToolState: Equatable {
+        var add = true
+        var extract = false
+        var test = false
+        var copy = false
+        var move = false
+        var delete = false
+        var info = false
+
+        func isEnabled(_ tool: PaneTool) -> Bool {
+            switch tool {
+            case .add: return add
+            case .extract: return extract
+            case .test: return test
+            case .copy: return copy
+            case .move: return move
+            case .delete: return delete
+            case .info: return info
+            }
+        }
+    }
+
+    /// 焦点窗格安装的工具栏动作。
+    var paneToolAction: (PaneTool) -> Void = { _ in }
+    /// 工具栏可用状态（AppKit 工具栏不走 SwiftUI 渲染，需手动刷新）。
+    var paneToolState = PaneToolState()
+
+    /// 文件冲突策略（工具栏弹出按钮 ↔ 焦点窗格的 @State）。
+    var conflictPolicy: ConflictPolicy = .skip
+    var conflictPolicyChanged: (ConflictPolicy) -> Void = { _ in }
 
     /// 文件列表视图模式：详细资料（表格）/ 大图标（网格）。
     enum ViewMode: String, CaseIterable, Identifiable {

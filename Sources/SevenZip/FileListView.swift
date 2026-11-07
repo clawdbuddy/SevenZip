@@ -69,6 +69,9 @@ struct FileListView: NSViewRepresentable {
         table.intercellSpacing = NSSize(width: 12, height: 2)
         table.allowsMultipleSelection = true
         table.allowsEmptySelection = true
+        // macOS 惯例（Finder/访达列表）：不画键盘焦点蓝环，焦点靠选中行
+        // 颜色表达；否则列表一旦成为 first responder 四周就出现一圈蓝边。
+        table.focusRingType = .none
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
 
         let columns: [(String, String, CGFloat)] = [
@@ -99,6 +102,8 @@ struct FileListView: NSViewRepresentable {
         scroll.documentView = table
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
+        // macOS 11+ 样式：滚动条覆盖在内容上（Finder 同款），而非占位的老式滚动条。
+        scroll.scrollerStyle = .overlay
         context.coordinator.table = table
         return scroll
     }

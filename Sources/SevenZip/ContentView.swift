@@ -10,6 +10,8 @@ import SwiftUI
 final class MainWindowController: NSObject, NSWindowDelegate {
     static let shared = MainWindowController()
     private(set) var window: NSWindow?
+    /// 原生工具栏控制器（动作转发给焦点窗格）。
+    private let toolbarController = MainToolbarController()
 
     func show() {
         if let window {
@@ -24,6 +26,16 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             backing: .buffered, defer: false)
         window.title = "七压"
         window.minSize = NSSize(width: 940, height: 560)
+        // macOS 标准窗口样式：工具栏与标题一体（unified）、标题栏透明，
+        // 工具栏背景由系统绘制毛玻璃，与 Finder / 系统 App 一致。
+        window.toolbarStyle = .unified
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .visible
+        window.toolbar = toolbarController.makeToolbar()
+        // 标签页（macOS 通用窗口行为）。
+        window.tabbingMode = .preferred
+        // 背景色跟随系统控件色（浅/深色自动切换）。
+        window.backgroundColor = .controlBackgroundColor
         window.contentView = NSHostingView(rootView: root)
         window.center()
         window.isReleasedWhenClosed = false
@@ -31,6 +43,24 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         self.window = window
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// 工具栏可用状态变化后刷新（AppKit 工具栏不走 SwiftUI 渲染）。
+    func refreshToolbar() {
+        guard let toolbar = window?.toolbar else { return }
+        toolbarController.applyState(toolbar: toolbar)
+        toolbar.validateVisibleItems()
+        // 工具栏项是延迟创建的：窗格首次 onAppear 同步状态时项可能尚未实例化，
+        // 此刻的刷新是空转。等布局完成后再刷一次。
+        DispatchQueue.main.async { [weak self] in
+            guard let toolbar = self?.window?.toolbar else { return }
+            self?.toolbarController.applyState(toolbar: toolbar)
+        }
+    }
+
+    /// 窗口标题（macOS 惯例：显示当前打开的归档名）。
+    func setWindowTitle(_ title: String) {
+        window?.title = title
     }
 
     nonisolated func windowWillClose(_ notification: Notification) {

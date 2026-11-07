@@ -270,8 +270,6 @@ struct PaneView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            toolbar
-            Divider()
             addressBar
             Divider()
             fileList
@@ -312,7 +310,13 @@ struct PaneView: View {
         .onChange(of: inArchive) { open in
             // 同步给菜单门控（「关闭压缩包 ⌘W」无归档时禁用，见 AppMenu）。
             if isFocused { actions.archiveOpen = open }
+            syncToolState()
         }
+        // 工具栏可用性随选中项与引擎忙闲变化。
+        .onChange(of: selected) { _ in syncToolState() }
+        .onChange(of: model.busy) { _ in syncToolState() }
+        // 冲突策略由工具栏弹出按钮改动：同步回工具栏，避免校验时回写旧值。
+        .onChange(of: conflict) { _ in syncToolState() }
         .onChange(of: model.emailShareURL) { url in
             // 「压缩并邮件」：压缩完成后调出系统邮件分享；未配置邮件则回退到 Finder 选中。
             guard let url else { return }
@@ -328,6 +332,7 @@ struct PaneView: View {
         .onChange(of: model.archiveURL) { _ in
             innerFolder = ""
             selected.removeAll()
+            syncToolState()
         }
         .onChange(of: model.nestedArchiveURL) { nested in
             // 嵌套归档已解压到临时目录：压栈并切换进去（model.open 会重置 nestedArchiveURL）。
@@ -373,49 +378,29 @@ struct PaneView: View {
         }
     }
 
-    // MARK: - Toolbar (7zFM large-icon style)
+    // MARK: - Toolbar
 
-    private func toolButton(_ title: String, _ icon: String, enabled: Bool = true,
-                            action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: icon).font(.system(size: 20))
-                Text(title).font(.caption2)
-            }
-            .frame(width: 56, height: 44)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(enabled ? Color.primary : Color.secondary.opacity(0.5))
-        .disabled(!enabled)
+    /// 原生工具栏（标题栏内）的动作与可用状态同步。
+    /// 工具栏是 AppKit NSToolbar（见 MainToolbar.swift），动作与菜单共用
+    /// 同一套处理器，这里只负责把窗格状态映射成工具项的可用/禁用。
+    private func syncToolState() {
+        guard isFocused else { return }
+        let hasSelection = !actionableSelection.isEmpty
+        var state = AppActions.PaneToolState()
+        state.add = !model.busy
+        state.extract = inArchive && !model.busy
+        state.test = inArchive && !model.busy
+        state.copy = hasSelection && !model.busy
+        state.move = hasSelection && !model.busy && (!inArchive || canEditArchive)
+        state.delete = hasSelection && !model.busy
+        state.info = (inArchive || hasSelection) && !model.busy
+        actions.paneToolState = state
+        actions.conflictPolicy = conflict
+        MainWindowController.shared.refreshToolbar()
+        // 窗口标题跟随当前归档（macOS 文档窗口惯例：标题显示文件名）。
+        MainWindowController.shared.setWindowTitle(model.archiveURL?.lastPathComponent ?? "七压")
     }
 
-    private var toolbar: some View {
-        HStack(spacing: 4) {
-            toolButton("添加", "plus") { addAction() }
-            toolButton("释放", "arrow.up.doc", enabled: inArchive) { extractAction() }
-            toolButton("测试", "checkmark.circle", enabled: inArchive) {
-                model.test(password: consumePassword())
-            }
-            toolButton("复制", "doc.on.doc", enabled: !actionableSelection.isEmpty) { copyAction() }
-            toolButton("移动", "rectangle.portrait.and.arrow.right",
-                       enabled: !actionableSelection.isEmpty && (!inArchive || canEditArchive)) { moveAction() }
-            toolButton("删除", "trash", enabled: !actionableSelection.isEmpty) {
-                showDeleteConfirmation = true
-            }
-            toolButton("信息", "info.circle", enabled: inArchive || !actionableSelection.isEmpty) {
-                showInfo = true
-            }
-            Spacer()
-            Picker("文件冲突", selection: $conflict) {
-                ForEach(ConflictPolicy.allCases) { value in Text(value.title).tag(value) }
-            }
-            .frame(width: 200)
-            .disabled(!inArchive)
-        }
-        .disabled(model.busy)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-    }
 
     // MARK: - Address bar
 
@@ -1329,6 +1314,21 @@ struct PaneView: View {
         actions.enterPassword = { manualPasswordPrompt = true }
         actions.fileAssociation = { showAssociation = true }
         actions.about = { showAbout = true }
+
+        // 原生工具栏（标题栏内）动作：与菜单同一套处理器。
+        actions.paneToolAction = { [model] tool in
+            switch tool {
+            case .add: addAction()
+            case .extract: extractAction()
+            case .test: model.test(password: consumePassword())
+            case .copy: copyAction()
+            case .move: moveAction()
+            case .delete: if !actionableSelection.isEmpty { showDeleteConfirmation = true }
+            case .info: if inArchive || !actionableSelection.isEmpty { showInfo = true }
+            }
+        }
+        actions.conflictPolicyChanged = { [model] policy in conflict = policy }
+        syncToolState()
 
         // Finder 服务与双击打开（由 AppDelegate 转发到 AppActions.shared）。
         actions.openFiles = { urls in

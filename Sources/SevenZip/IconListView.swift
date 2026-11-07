@@ -28,6 +28,8 @@ struct IconListView: NSViewRepresentable {
         collection.allowsMultipleSelection = true
         collection.allowsEmptySelection = true
         collection.backgroundColors = [.textBackgroundColor]
+        // 同 FileListView：macOS 惯例不画焦点蓝环，焦点靠选中项高亮表达。
+        collection.focusRingType = .none
         collection.register(IconItem.self, forItemWithIdentifier: IconItem.identifier)
 
         collection.dataSource = context.coordinator
@@ -43,6 +45,8 @@ struct IconListView: NSViewRepresentable {
         scroll.documentView = collection
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
+        // macOS 11+ 样式：滚动条覆盖在内容上（Finder 同款）。
+        scroll.scrollerStyle = .overlay
         context.coordinator.collection = collection
 
         // 双击 = 激活（进入文件夹 / 打开文件）。
