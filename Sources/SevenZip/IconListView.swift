@@ -186,7 +186,7 @@ struct IconListView: NSViewRepresentable {
         override func loadView() {
             let container = NSView()
             iconView.translatesAutoresizingMaskIntoConstraints = false
-            iconView.imageScaling = .scaleProportionallyUpOrDown
+            iconView.imageScaling = .scaleProportionallyDown
             nameLabel.translatesAutoresizingMaskIntoConstraints = false
             nameLabel.alignment = .center
             nameLabel.lineBreakMode = .byTruncatingTail
@@ -209,17 +209,10 @@ struct IconListView: NSViewRepresentable {
 
         func configure(_ row: FileListRow) {
             nameLabel.stringValue = row.name
-            let symbol: String
-            let color: NSColor
-            switch row.kind {
-            case .up: symbol = "arrow.turn.left.up"; color = .secondaryLabelColor
-            case .folder: symbol = "folder.fill"; color = .systemBrown
-            case .file:
-                symbol = row.isArchiveFile ? "doc.zipper" : "doc.fill"
-                color = row.isArchiveFile ? .controlAccentColor : .secondaryLabelColor
-            }
-            iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-            iconView.contentTintColor = color
+            // 同 FileListView：文件夹/压缩包用系统真实图标，其余用系统符号。
+            let icon = FileIcons.icon(for: row)
+            iconView.image = icon.image
+            iconView.contentTintColor = icon.tint
         }
 
         override var isSelected: Bool {

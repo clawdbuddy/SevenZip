@@ -144,9 +144,12 @@ struct FileListView: NSViewRepresentable {
             switch column.identifier.rawValue {
             case "name":
                 cell.textField?.stringValue = item.name
-                cell.imageView?.image = NSImage(systemSymbolName: iconName(item),
-                                                accessibilityDescription: nil)
-                cell.imageView?.contentTintColor = iconColor(item)
+                // macOS 风格图标：文件夹/压缩包用系统真实图标，其余用系统符号。
+                if let imageView = cell.imageView {
+                    let icon = FileIcons.icon(for: item)
+                    imageView.image = icon.image
+                    imageView.contentTintColor = icon.tint
+                }
                 cell.imageView?.isHidden = false
             case "size":
                 cell.textField?.stringValue = item.sizeText
@@ -178,6 +181,9 @@ struct FileListView: NSViewRepresentable {
             cell.identifier = identifier
             let image = NSImageView()
             image.translatesAutoresizingMaskIntoConstraints = false
+            // 系统图标原图很大（如 512×512），必须只缩小不放大，
+            // 否则 16pt 的单元格会被撑成模糊的大图。
+            image.imageScaling = .scaleProportionallyDown
             let text = NSTextField(labelWithString: "")
             text.translatesAutoresizingMaskIntoConstraints = false
             text.lineBreakMode = .byTruncatingMiddle
@@ -195,22 +201,6 @@ struct FileListView: NSViewRepresentable {
                 text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
             ])
             return cell
-        }
-
-        private func iconName(_ row: FileListRow) -> String {
-            switch row.kind {
-            case .up: return "arrow.turn.left.up"
-            case .folder: return "folder"
-            case .file: return row.isArchiveFile ? "doc.zipper" : "doc"
-            }
-        }
-
-        private func iconColor(_ row: FileListRow) -> NSColor {
-            switch row.kind {
-            case .up: return .secondaryLabelColor
-            case .folder: return .systemBrown
-            case .file: return row.isArchiveFile ? .controlAccentColor : .secondaryLabelColor
-            }
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {

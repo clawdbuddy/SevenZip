@@ -34,13 +34,18 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
     }
 
     /// 工具项定义：标识、SF Symbol、名称、悬停说明。
+    ///
+    /// 符号一律取 macOS 系统工具栏的线性（描边）家族，语义与访达/Xcode
+    /// 一致：加号 = 添加，方框箭头 = 释放到…，对勾 = 测试，副本 = 复制，
+    /// 箭头 = 移动到…，垃圾桶 = 删除，i = 信息。不混用填充型符号，
+    /// 否则整排图标风格不统一。
     private static let tools: [(id: NSToolbarItem.Identifier, tool: AppActions.PaneTool,
                                 symbol: String, title: String, help: String)] = [
         (ID.add, .add, "plus", "添加", "把所选文件加入压缩包"),
-        (ID.extract, .extract, "square.and.arrow.up", "释放", "从归档中释放所选项目"),
+        (ID.extract, .extract, "square.and.arrow.down", "释放", "从归档中释放所选项目"),
         (ID.test, .test, "checkmark.seal", "测试", "测试归档完整性"),
         (ID.copy, .copy, "doc.on.doc", "复制", "复制所选项目"),
-        (ID.move, .move, "arrow.right.doc.on.clipboard", "移动", "移动所选项目"),
+        (ID.move, .move, "arrow.up.forward.app", "移动", "移动所选项目"),
         (ID.delete, .delete, "trash", "删除", "删除所选项目"),
         (ID.info, .info, "info.circle", "信息", "查看详细信息"),
     ]
