@@ -65,14 +65,19 @@ final class BenchmarkRunner: ObservableObject {
     }
 
     func stop() {
+        // 显式停止/关窗（onDisappear 也走这里）即放弃「重新启动」意图：
+        // 否则 finish() 回主线程看到 restartPending 会在无 UI 下后台重跑 7zz。
+        restartPending = false
         if let pid { kill(pid, SIGTERM) }
     }
 
     /// 停止当前运行并在其结束后自动重启（供「重新启动」按钮）。
     func restart() {
         if running {
-            restartPending = true
+            // 注意顺序：stop() 会清 restartPending（关窗/显式停止放弃重启），
+            // 必须先 stop 再置标志。
             stop()
+            restartPending = true
         } else {
             start()
         }

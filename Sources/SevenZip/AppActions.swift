@@ -42,6 +42,10 @@ final class AppActions: ObservableObject {
     /// 双窗格是否开启（ContentView 同步；菜单据此门控 F5/F6 与「切换到另一窗格」）。
     var dualPaneActive = false
 
+    /// 焦点窗格是否有打开的归档（PaneView 同步；菜单据此门控「关闭压缩包 ⌘W」，
+    /// 无归档时禁用该键等价才会落到窗口菜单的「关闭」）。
+    var archiveOpen = false
+
     /// 文件列表视图模式：详细资料（表格）/ 大图标（网格）。
     enum ViewMode: String, CaseIterable, Identifiable {
         case list, icons

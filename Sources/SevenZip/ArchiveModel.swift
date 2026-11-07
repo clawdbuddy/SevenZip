@@ -105,15 +105,16 @@ final class ArchiveModel: ObservableObject {
         } catch { report(error.localizedDescription) }
     }
 
+    @discardableResult
     func extract(to directory: URL, paths: [String] = [],
                  conflict: ConflictPolicy = .skip, password: String? = nil,
                  pathMode: ExtractPathMode = .full, eliminateRoot: String? = nil,
-                 group: UUID? = nil) {
-        guard let url = archiveURL else { return }
-        guard listingComplete else { report("归档清单尚未完整读取，拒绝解压。") ; return }
+                 group: UUID? = nil) -> Bool {
+        guard let url = archiveURL else { return false }
+        guard listingComplete else { report("归档清单尚未完整读取，拒绝解压。") ; return false }
         guard entries.allSatisfy({ ArchivePath.isSafe($0.path) }) else {
             report("归档包含绝对路径或上级目录跳转条目，安全模式已拒绝解压。")
-            return
+            return false
         }
         do {
             let targets = enginePaths(for: expandedPaths(paths))
@@ -124,12 +125,16 @@ final class ArchiveModel: ObservableObject {
             enqueue(command, completion: .extracted(ExtractCompletion(
                 destination: directory, restoreMap: map,
                 eliminateRoot: pathMode == .full ? eliminateRoot : nil)), group: group)
-        } catch { report(error.localizedDescription) }
+            return true
+        } catch { report(error.localizedDescription); return false }
     }
 
     func batchExtract(archives: [URL], to destination: URL,
                       conflict: ConflictPolicy = .skip, password: String? = nil) {
         guard !archives.isEmpty else { return }
+        // 整批共享一个任务组：某个归档检出危险路径时按组清除本批剩余任务，
+        // 不能误伤用户随后入队的无关任务。
+        let group = UUID()
         var used = Set<String>()
         for archive in archives {
             // Give every archive its own output directory to limit collisions.
@@ -142,7 +147,7 @@ final class ArchiveModel: ObservableObject {
             do {
                 try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
                 let list = ArchiveCommands.list(archive, password: password)
-                enqueue(list, completion: .batchPreflight(archive, target, conflict, password, .full))
+                enqueue(list, completion: .batchPreflight(archive, target, conflict, password, .full), group: group)
             } catch { report(error.localizedDescription); return }
         }
     }
@@ -226,10 +231,15 @@ final class ArchiveModel: ObservableObject {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let invocation = try ArchiveCommands.extract(url, to: directory,
                                                          paths: [entry.enginePath], conflict: .skip, password: password)
-            previewFolders.append(directory)
+            // 嵌套目录不进 previewFolders：进入嵌套后 nestedArchiveURL 会被
+            // model.open 清掉，修剪失去保护会误删外层目录（里面正是当前打开的
+            // 内层归档本体）。生命周期由界面的嵌套栈与 TempDirectoryRegistry 管理。
             TempDirectoryRegistry.register(directory)
             enqueue(invocation, completion: .nested(directory, path, ArchiveListing.legacyNameRestoreMap(entries)))
-        } catch { report(error.localizedDescription) }
+        } catch {
+            report(error.localizedDescription)
+            removeTempDirectory(directory)
+        }
     }
 
     func convert(to destination: URL, format: ArchiveFormat, password: String? = nil) {
@@ -257,7 +267,10 @@ final class ArchiveModel: ObservableObject {
             TempDirectoryRegistry.register(staging)
             let command = try ArchiveCommands.extract(source, to: staging, password: password)
             enqueue(command, completion: .conversionExtracted(staging, destination, format, password, restoreMap))
-        } catch { report(error.localizedDescription) }
+        } catch {
+            report(error.localizedDescription)
+            removeTempDirectory(staging)
+        }
     }
 
     func preview(path: String, password: String? = nil) {
@@ -276,7 +289,10 @@ final class ArchiveModel: ObservableObject {
             previewFolders.append(directory)
             TempDirectoryRegistry.register(directory)
             enqueue(invocation, completion: .preview(directory, path, ArchiveListing.legacyNameRestoreMap(entries)))
-        } catch { report(error.localizedDescription) }
+        } catch {
+            report(error.localizedDescription)
+            removeTempDirectory(directory)
+        }
     }
 
     func delete(paths: [String], password: String? = nil, group: UUID? = nil) {
@@ -318,9 +334,14 @@ final class ArchiveModel: ObservableObject {
     private var cancelRequested = false
 
     func cancel() {
+        // 仅在确有任务运行时取消：否则 cancelRequested 会残留成毒药标志，
+        // 让下一个成功任务被误报取消（窗口关闭等兜底路径会无脑调 cancel）。
+        guard busy else { return }
         pending.removeAll()
         queueCount = 0
         cancelRequested = true
+        // 已知风险：kill 与后台 waitpid 之间存在微秒级 pid 复用窗口，
+        // 理论上可能 SIGTERM 到复用该 pid 的无关进程（概率极低，暂不处理）。
         if let pid = runningPID { kill(pid, SIGTERM) }
     }
 
@@ -411,11 +432,13 @@ final class ArchiveModel: ObservableObject {
 
             guard let resourceRoot = Bundle.main.resourceURL else {
                 report("应用资源目录不存在。")
+                dropGroupMembers(of: job)
                 continue
             }
             let binary = resourceRoot.appendingPathComponent("bin/7zz")
             guard FileManager.default.isExecutableFile(atPath: binary.path) else {
                 report("找不到内置 7zz，请在 Mac 上运行 scripts/build-macos.sh。")
+                dropGroupMembers(of: job)
                 continue
             }
 
@@ -430,6 +453,7 @@ final class ArchiveModel: ObservableObject {
                                                     environment: environment)
             } catch {
                 report("启动 7zz 失败：\(error.localizedDescription)")
+                dropGroupMembers(of: job)
                 continue
             }
 
@@ -471,6 +495,14 @@ final class ArchiveModel: ObservableObject {
         }
     }
 
+    /// 启动/运行失败时级联取消同组后续任务：
+    /// 「移出归档」的解压没跑成，删除绝不能执行（移动退化为删除 = 数据丢失）。
+    private func dropGroupMembers(of job: Job) {
+        guard let group = job.group else { return }
+        pending.removeAll { $0.group == group }
+        queueCount = pending.count
+    }
+
     private func consumeProgress(_ fragment: String, runID: UUID) {
         guard activeRunID == runID else { return }
         progressFragment = String((progressFragment + fragment).suffix(500))
@@ -491,10 +523,22 @@ final class ArchiveModel: ObservableObject {
         // 且不做密码错误探测（取消的残缺输出可能恰好含 "password"）。
         if cancelRequested {
             cancelRequested = false
-            status = "已取消"
-            output = "操作已取消。"
-            launchNext()
-            return
+            if code != 0 {
+                // 取消也要清理临时目录，与失败分支一致（否则残留到退出）。
+                switch job.completion {
+                case .conversionExtracted(let staging, _, _, _, _), .converted(_, let staging):
+                    removeTempDirectory(staging)
+                case .preview(let folder, _, _), .nested(let folder, _, _):
+                    removeTempDirectory(folder)
+                default: break
+                }
+                status = "已取消"
+                output = "操作已取消。"
+                launchNext()
+                return
+            }
+            // SIGTERM 送达前进程已成功退出（code == 0）：落到下方成功路径，
+            // 否则 .edited 不重载导致条目过期、.extracted 文件已写出却显示取消。
         }
         output = String(text.suffix(60_000))
         guard code == 0 else {
@@ -581,8 +625,8 @@ final class ArchiveModel: ObservableObject {
             }
             guard paths.allSatisfy({ ArchivePath.isSafe($0.path) }) else {
                 report("批量任务中止：\(archive.lastPathComponent) 包含不安全路径。")
-                pending.removeAll()
-                queueCount = 0
+                // 按组清除本批剩余任务；无组任务（单归档 extractArchive）无需清除。
+                dropGroupMembers(of: job)
                 return
             }
             do {
@@ -590,7 +634,9 @@ final class ArchiveModel: ObservableObject {
                                                           conflict: conflict, password: password,
                                                           pathMode: pathMode)
                 let map = ArchiveListing.legacyNameRestoreMap(paths, flat: pathMode == .flat)
-                enqueue(command, completion: .extracted(ExtractCompletion(destination: target, restoreMap: map)))
+                // 继承任务组：同批后续检出危险路径时，尚未跑的解压一并撤销。
+                enqueue(command, completion: .extracted(ExtractCompletion(destination: target, restoreMap: map)),
+                        group: job.group)
             } catch { report(error.localizedDescription) }
         case .preview(let folder, let displayPath, let restoreMap):
             restoreRecoveredNames(in: folder, map: restoreMap)
@@ -676,6 +722,9 @@ final class ArchiveModel: ObservableObject {
     /// 删除已登记的临时目录并同步注销（保持登记表精确，退出清扫不重复删）。
     private func removeTempDirectory(_ url: URL) {
         TempDirectoryRegistry.unregister(url)
+        // 同步预览记账：失败清理/修剪删掉的目录不得留在 previewFolders 里
+        // 挤占 trim 的名额（幽灵条目导致正常预览目录被提前修剪）。
+        previewFolders.removeAll { $0 == url }
         try? FileManager.default.removeItem(at: url)
     }
 

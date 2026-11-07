@@ -34,8 +34,18 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     }
 
     nonisolated func windowWillClose(_ notification: Notification) {
-        Task { @MainActor in
+        // windowWillClose 本就在主线程，故同步清理（参照 AppMenu.menuNeedsUpdate）。
+        // 异步化会留下死路由缝：close 与清理之间到达的 URL 事件看到
+        // handlersInstalled==true 会调死窗格闭包；close→show 同一 runloop 时
+        // 还会误删新窗口刚安装的 keyMonitor。
+        MainActor.assumeIsolated {
             self.window = nil
+            // 先取消本窗口各窗格仍在运行的后台任务（解压/压缩/转换）：
+            // 否则孤儿 7zz 继续运行，还会重建下面 cleanupAll 删掉的暂存目录
+            // （重建出的目录不在登记表 → 永久泄漏）。cancel() 内部有守卫，
+            // 对空闲模型调用无副作用。
+            for ref in paneModelRefs { ref.model?.cancel() }
+            paneModelRefs.removeAll()
             // 窗口销毁后：命令路由层必须复位，否则 Finder 右键命令会路由到
             // 已销毁窗格安装的闭包（操作在不可见的死模型上执行），双击归档
             // 也会把文件开进死窗格、新窗口只剩空壳。
@@ -46,8 +56,6 @@ final class MainWindowController: NSObject, NSWindowDelegate {
                 self.keyMonitor = nil
             }
             // 本窗口的嵌套/预览临时目录随窗口销毁；登记册兜底清理。
-            // 窗口关闭即放弃该窗口发起的后台任务（如转换），其暂存目录
-            // 一并删除——任务随后的收尾写入会失败并落入错误分支，无副作用。
             TempDirectoryRegistry.cleanupAll()
         }
     }
@@ -55,6 +63,31 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     /// ContentView 安装的本地功能键监视器；关窗时必须移除，否则重开窗口
     /// 会累积多个监视器（F9 触发两次净效果为零，F5/F6 重复执行）。
     var keyMonitor: Any?
+
+    /// 本窗口各窗格模型的弱引用（ContentView onAppear 时注册），供
+    /// windowWillClose 逐一 cancel()。用弱引用：窗格销毁后模型可能仍被
+    /// AppActions 闭包持有，但控制器不应为其续命。
+    private var paneModelRefs: [WeakArchiveModel] = []
+
+    func registerPaneModels(_ models: [ArchiveModel]) {
+        paneModelRefs = models.map { WeakArchiveModel(model: $0) }
+    }
+}
+
+/// ArchiveModel 的弱引用盒（数组元素不能直接标 weak）。
+private struct WeakArchiveModel {
+    weak var model: ArchiveModel?
+}
+
+private extension PaneView {
+    /// PaneView 未暴露模型访问器（@StateObject 私有），从镜像中取出。
+    /// StateObject 的存储盒与 SwiftUI 安装后的持久状态共享，取到的是活实例。
+    @MainActor var archiveModel: ArchiveModel? {
+        Mirror(reflecting: self).children
+            .first { $0.label == "_model" }
+            .flatMap { $0.value as? StateObject<ArchiveModel> }?
+            .wrappedValue
+    }
 }
 
 /// 双窗格外壳（7zFM F9）：承载 1~2 个 PaneView，跟踪焦点窗格，
@@ -71,10 +104,16 @@ struct ContentView: View {
     @State private var focusedPane = 0
 
     var body: some View {
-        HSplitView {
-            PaneView(isFocused: !dualPane || focusedPane == 0) { focusedPane = 0 }
+        // 窗格先存为局部常量：onAppear 时需把各窗格的 ArchiveModel 注册到
+        // MainWindowController（供关窗时取消后台任务），不能只在 HSplitView
+        // 里内联构造。第二窗格的 @StateObject 随 dualPane 开启重建，故在
+        // onAppear 与 onChange(dualPane) 两处都重新注册当前实例。
+        let pane0 = PaneView(isFocused: !dualPane || focusedPane == 0) { focusedPane = 0 }
+        let pane1 = PaneView(isFocused: focusedPane == 1) { focusedPane = 1 }
+        return HSplitView {
+            pane0
             if dualPane {
-                PaneView(isFocused: focusedPane == 1) { focusedPane = 1 }
+                pane1
             }
         }
         .frame(minWidth: 940, minHeight: 560)
@@ -82,7 +121,16 @@ struct ContentView: View {
             actions.dualPaneActive = dualPane
             installShellActions()
             installFunctionKeyMonitor()
+            registerPaneModels(pane0, dualPane ? pane1 : nil)
         }
+        .onChange(of: dualPane) { _ in
+            registerPaneModels(pane0, dualPane ? pane1 : nil)
+        }
+    }
+
+    /// 把当前各窗格模型注册到窗口控制器（关窗时统一 cancel，杀孤儿 7zz）。
+    private func registerPaneModels(_ panes: PaneView?...) {
+        MainWindowController.shared.registerPaneModels(panes.compactMap { $0?.archiveModel })
     }
 
     private func installShellActions() {

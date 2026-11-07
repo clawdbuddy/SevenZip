@@ -253,15 +253,24 @@ extension AppMenuBuilder: NSMenuItemValidation {
     /// 这些菜单项 target 写死为 AppMenuBuilder、不走响应链，若不做门控，
     /// 用户在独立对话框里按 ⌘⌫/⌘W/⌘⏎ 等会越过 key window 直接触发
     /// 主窗口的文件操作（含删除）——必须只在主窗口为 key 时可用。
+    /// 窗口销毁后这些 actions 闭包指向已销毁窗格，门控同样挡住误触发。
     private static let paneActionTags: Set<String> = [
         "closeArchive", "selectAll", "deselectAll", "invertSelection",
         "renameSelection", "deleteSelection", "refresh", "goUp", "toggleLog",
+        "openArchive", "createArchive", "batchExtract", "batchCompress",
+        "convert", "enterPassword", "toggleDualPane",
     ]
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         guard let tag = menuItem.representedObject as? String else { return true }
         let mainKey = MainWindowController.shared.window?.isKeyWindow == true
-        if Self.paneActionTags.contains(tag) { return mainKey }
+        if tag == "closeArchive" {
+            // 无打开归档时禁用：⌘W 才会穿过本项落到窗口菜单的「关闭」，
+            // 否则键等价被 enabled 的本项消费、PaneView 又静默 return。
+            return mainKey && actions.archiveOpen
+        }
+        // 「计算校验和」子菜单的 tag 带算法后缀（checksum:CRC32 等），按前缀匹配。
+        if Self.paneActionTags.contains(tag) || tag.hasPrefix("checksum:") { return mainKey }
         switch tag {
         case "switchPane", "copyToOtherPane", "moveToOtherPane":
             // 跨窗格动作还要求双窗格已开启（单窗格时 F5/F6 无意义，

@@ -9,11 +9,13 @@ import Foundation
 struct SpawnedProcess {
     enum SpawnError: LocalizedError {
         case pipeFailed
+        case setupFailed
         case spawnFailed(Int32)
 
         var errorDescription: String? {
             switch self {
             case .pipeFailed: return "创建进程管道失败。"
+            case .setupFailed: return "初始化进程启动参数失败（内存不足）。"
             case .spawnFailed(let code): return "posix_spawn 失败（错误码 \(code)）。"
             }
         }
@@ -36,21 +38,42 @@ struct SpawnedProcess {
         }
 
         var actions: posix_spawn_file_actions_t? = nil
-        posix_spawn_file_actions_init(&actions)
+        // 失败清理的公共路径：销毁 actions、关闭全部已开 fd（不重复 spawnFailed 分支的关闭逻辑）。
+        let closeAllFds = {
+            close(outPipe[0]); close(outPipe[1])
+            close(inPipe[0]); close(inPipe[1])
+        }
+        // OOM 等极端场景下 file_actions 系列调用会返回非 0：必须检查并走清理路径，
+        // 否则子进程 fd 重定向残缺，行为不可预期。
+        guard posix_spawn_file_actions_init(&actions) == 0 else {
+            closeAllFds()
+            throw SpawnError.setupFailed
+        }
         defer { posix_spawn_file_actions_destroy(&actions) }
-        posix_spawn_file_actions_adddup2(&actions, outPipe[1], STDOUT_FILENO)
-        posix_spawn_file_actions_adddup2(&actions, outPipe[1], STDERR_FILENO)
-        posix_spawn_file_actions_adddup2(&actions, inPipe[0], STDIN_FILENO)
-        posix_spawn_file_actions_addclose(&actions, outPipe[0])
-        posix_spawn_file_actions_addclose(&actions, inPipe[1])
+        var actionsOK = posix_spawn_file_actions_adddup2(&actions, outPipe[1], STDOUT_FILENO) == 0
+        actionsOK = actionsOK && posix_spawn_file_actions_adddup2(&actions, outPipe[1], STDERR_FILENO) == 0
+        actionsOK = actionsOK && posix_spawn_file_actions_adddup2(&actions, inPipe[0], STDIN_FILENO) == 0
+        actionsOK = actionsOK && posix_spawn_file_actions_addclose(&actions, outPipe[0]) == 0
+        actionsOK = actionsOK && posix_spawn_file_actions_addclose(&actions, inPipe[1]) == 0
         if let directory {
-            posix_spawn_file_actions_addchdir_np(&actions, directory.path)
+            actionsOK = actionsOK && posix_spawn_file_actions_addchdir_np(&actions, directory.path) == 0
+        }
+        guard actionsOK else {
+            closeAllFds()
+            throw SpawnError.setupFailed
         }
 
         // strdup(String) encodes as UTF-8 without any Unicode normalization.
         var argv: [UnsafeMutablePointer<CChar>?] = ([executable.path] + arguments).map { strdup($0) }
-        argv.append(nil)
         var envp: [UnsafeMutablePointer<CChar>?] = environment.map { strdup("\($0.key)=\($0.value)") }
+        // strdup 失败（OOM）返回 nil：nil 混入 argv/envp 会被当作数组结尾，
+        // 静默截断参数，必须释放已分配内存后抛错。
+        guard !argv.contains(nil), !envp.contains(nil) else {
+            for pointer in argv + envp { free(pointer) }   // free(nil) 安全
+            closeAllFds()
+            throw SpawnError.setupFailed
+        }
+        argv.append(nil)
         envp.append(nil)
         defer {
             for pointer in argv + envp { free(pointer) }

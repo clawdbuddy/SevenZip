@@ -338,7 +338,7 @@ struct StandaloneCompressView: View {
 /// 独立对话框窗口控制器（AppKit 承载，与 Benchmark 同因：WindowGroup 场景会为
 /// 命令 URL 新开主窗口，故对话框不走 SwiftUI Scene）。
 @MainActor
-final class CompressDialogController {
+final class CompressDialogController: NSObject, NSWindowDelegate {
     static let shared = CompressDialogController()
     private(set) var window: NSWindow?
     /// 由控制器创建并注入视图，便于在 show() 时查询忙闲。
@@ -371,8 +371,26 @@ final class CompressDialogController {
         window.contentView = NSHostingView(rootView: view)
         window.center()
         window.isReleasedWhenClosed = false
+        window.delegate = self
         self.window = window
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// 任务进行中点红钮关窗 = 取消：否则 7zz 成孤儿继续写盘，
+    /// 用户却以为压缩已停止（与 StandaloneOperation 同款处理）。
+    nonisolated func windowShouldClose(_ sender: NSWindow) -> Bool {
+        Task { @MainActor in self.model?.cancel() }
+        return true
+    }
+
+    /// 关窗后释放 window/model 引用，下次 show() 重建。同步执行
+    /// （本回调本就在主线程）：show() 的重建路径先 close() 旧窗再赋新窗，
+    /// 异步置空会把刚建好的新窗口误清。
+    nonisolated func windowWillClose(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            self.window = nil
+            self.model = nil
+        }
     }
 }

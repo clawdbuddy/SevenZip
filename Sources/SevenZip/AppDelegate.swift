@@ -65,15 +65,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 场景侧刻意不挂 .onOpenURL / handlesExternalEvents（会让系统为命令新建
     /// 主窗口），因此两类 URL 都会送达本回调。
     func application(_ application: NSApplication, open urls: [URL]) {
+        // 只认可能产生实际动作的 URL：文件 URL，或带非空 path 查询项的
+        // sevenzip:// 命令。无 path 的命令 URL 会被 routeCommandURL 静默丢弃，
+        // 若也置 receivedURLOpen 会吞掉 0.5s 兜底开窗，冷启动后一个窗口都没有。
+        let fileURLs = urls.filter { $0.isFileURL }
+        let commandURLs = urls.filter { $0.scheme == "sevenzip" && Self.isValidCommandURL($0) }
+        guard !fileURLs.isEmpty || !commandURLs.isEmpty else { return }
         receivedURLOpen = true
         NSApp.activate(ignoringOtherApps: true)
         Task { @MainActor in
-            let fileURLs = urls.filter { $0.isFileURL }
             if !fileURLs.isEmpty { AppActions.shared.routeOpenFiles(fileURLs) }
-            for url in urls where url.scheme == "sevenzip" {
+            for url in commandURLs {
                 AppActions.shared.routeCommandURL(url)
             }
         }
+    }
+
+    /// 与 AppActions.routeCommandURL 的合法性判定对齐（保守规则）：
+    /// 必须带至少一个非空 path 查询项，否则路由层 guard 静默返回、无任何动作。
+    private nonisolated static func isValidCommandURL(_ url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        return (components.queryItems ?? []).contains { $0.name == "path" && !($0.value ?? "").isEmpty }
     }
 
     /// Dock 图标点击（无可见窗口时重开主窗口）。

@@ -18,7 +18,6 @@ final class Provider: NSViewController, QLPreviewingController {
     private let summaryLabel = NSTextField(labelWithString: "")
     private let noteLabel = NSTextField(labelWithString: "")
     private var rootNodes: [Node] = []
-    private var truncatedCount = 0
     /// 递增请求序号：Quick Look 复用同一 Provider 连续预览时，
     /// 慢请求的结果不得覆盖新请求的界面（结果乱序）。
     private var requestID = 0
@@ -93,6 +92,9 @@ final class Provider: NSViewController, QLPreviewingController {
     func preparePreviewOfFile(at url: URL, completionHandler handler: @escaping (Error?) -> Void) {
         summaryLabel.stringValue = "正在读取 \(url.lastPathComponent) …"
         noteLabel.stringValue = ""
+        // 新请求开始时清空旧归档的树，避免旧内容在新摘要行下方闪现到新结果到达。
+        rootNodes = []
+        outline.reloadData()
         requestID += 1
         let id = requestID
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -154,6 +156,10 @@ final class Provider: NSViewController, QLPreviewingController {
             result.summary = "无法启动 7zz：\(error.localizedDescription)"
             return result
         }
+        // 此路径不需要密码输入，立即关闭 stdin：文件名加密（-mhe）时 7zz 会阻塞
+        // 等待密码输入，stdin 一直开着必撑满超时被杀；读到 EOF 则 7zz 以非零码
+        // 退出且输出含 password，正好落入下方的加密提示分支。
+        spawned.stdinWrite.closeFile()
         // 限时读取：超过 timeLimit 杀掉进程，用已捕获的部分输出解析。
         let finished = NSLock()
         var didFinish = false
@@ -163,7 +169,17 @@ final class Provider: NSViewController, QLPreviewingController {
             let done = didFinish
             if !done { timedOut = true }
             finished.unlock()
-            if !done { kill(spawned.pid, SIGTERM) }
+            if !done {
+                kill(spawned.pid, SIGTERM)
+                // 二级看门狗：SIGTERM 被忽略或进程处于不可中断 I/O 时升级 SIGKILL，
+                // 否则 availableData 永久阻塞，本队列线程随之泄漏。
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5) {
+                    finished.lock()
+                    let stillRunning = !didFinish
+                    finished.unlock()
+                    if stillRunning { kill(spawned.pid, SIGKILL) }
+                }
+            }
         }
         var captured = Data()
         while true {
@@ -171,9 +187,13 @@ final class Provider: NSViewController, QLPreviewingController {
             if chunk.isEmpty { break }
             captured.append(chunk)
         }
-        let code = spawned.waitForExit()
+        // EOF 意味着进程已关闭 stdout（基本退出完成），此时先置"无需再杀"标记，
+        // 避免"进程已正常退出但 waitpid 尚未返回"的窗口期被看门狗误标超时。
         finished.lock()
         didFinish = true
+        finished.unlock()
+        let code = spawned.waitForExit()
+        finished.lock()
         let wasTimedOut = timedOut
         finished.unlock()
 

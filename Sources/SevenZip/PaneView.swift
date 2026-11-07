@@ -26,6 +26,9 @@ struct PaneView: View {
 
     @State private var selected = Set<String>()
     @State private var archivePassword = ""
+    /// 嵌套打开的密码暂存：activate 时 consumePassword() 已清空输入框，
+    /// 而 nestedArchiveURL 回调在解压完成后才异步到达，密码必须先存下。
+    @State private var pendingNestedPassword: String?
     @State private var conflict: ConflictPolicy = .skip
     @State private var options = CompressionOptions()
     @State private var sourcesForCompression: [URL] = []
@@ -306,6 +309,10 @@ struct PaneView: View {
         .onChange(of: isFocused) { focused in
             if focused { installMenuActions() } else { installOtherPaneHooks() }
         }
+        .onChange(of: inArchive) { open in
+            // 同步给菜单门控（「关闭压缩包 ⌘W」无归档时禁用，见 AppMenu）。
+            if isFocused { actions.archiveOpen = open }
+        }
         .onChange(of: model.emailShareURL) { url in
             // 「压缩并邮件」：压缩完成后调出系统邮件分享；未配置邮件则回退到 Finder 选中。
             guard let url else { return }
@@ -325,7 +332,9 @@ struct PaneView: View {
         .onChange(of: model.nestedArchiveURL) { nested in
             // 嵌套归档已解压到临时目录：压栈并切换进去（model.open 会重置 nestedArchiveURL）。
             guard let nested, let outer = model.archiveURL, inArchive else { return }
-            let password = consumePassword()
+            // 密码在 activate 时已被 consume 走，这里取暂存值（见 pendingNestedPassword）。
+            let password = pendingNestedPassword ?? consumePassword()
+            pendingNestedPassword = nil
             let context = NestedContext(outerURL: outer,
                                         innerFolder: innerFolder,
                                         tempDir: Self.nestedTempRoot(of: nested),
@@ -337,6 +346,9 @@ struct PaneView: View {
             model.open(nested, password: password)
         }
         .onChange(of: model.entries) { entries in
+            // 仅归档视图：磁盘浏览时后台 .edited 重列完成也会触发本回调，
+            // 交集对象是归档路径，会把本地选中清空。
+            guard inArchive else { return }
             selected.formIntersection(Set(entries.map(\.path)).union([".."]))
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -908,7 +920,11 @@ struct PaneView: View {
             if inArchive {
                 if row.isArchiveFile {
                     // 归档里的归档：解压到临时目录后作为新一层进入（只读）。
-                    model.openNested(path: row.id, password: consumePassword())
+                    // 密码在此 consume，但 nestedArchiveURL 回调异步到达，
+                    // 暂存起来供压栈与返回外层时使用。
+                    let password = consumePassword()
+                    pendingNestedPassword = password
+                    model.openNested(path: row.id, password: password)
                 } else {
                     model.preview(path: row.id, password: consumePassword())
                 }
@@ -978,7 +994,6 @@ struct PaneView: View {
     }
 
     private func navigateToAddress(_ address: String) {
-        clearNesting()
         if address.contains("\\") {
             // 历史里的归档地址：[磁盘归档路径]\[归档内路径\]。嵌套层级
             // （…\inner.7z\…）不可直接恢复，退回到最外层归档根目录。
@@ -988,6 +1003,9 @@ struct PaneView: View {
                 model.warn("归档已不存在：\(diskPath)")
                 return
             }
+            // 校验通过后才清嵌套：先清会删掉仍在展示的嵌套临时目录，
+            // 界面停在嵌套视图但数据已没了。
+            clearNesting()
             inArchive = true
             innerFolder = ""
             selected.removeAll()
@@ -1008,6 +1026,8 @@ struct PaneView: View {
             model.warn("地址已失效：\(address)")
             return
         }
+        // 同上：目标有效后才清嵌套（openArchive 内部也会清，幂等）。
+        clearNesting()
         if isDirectory.boolValue {
             inArchive = false
             currentDir = URL(fileURLWithPath: address)
@@ -1101,10 +1121,12 @@ struct PaneView: View {
             let targets = expandedArchiveSelection
             guard !targets.isEmpty, let destination = chooseFolderPanel(title: "从归档移出到…") else { return }
             // 依赖组：解压失败时删除必须取消（否则「移动」在失败路径退化成「删除」）。
+            // extract 前置校验不过会拒绝入队并返回 false——此时绝不能调 delete。
             let group = UUID()
-            model.extract(to: destination, paths: targets, conflict: conflict,
-                          password: consumePassword(), group: group)
-            model.delete(paths: targets, password: nil, group: group)
+            if model.extract(to: destination, paths: targets, conflict: conflict,
+                             password: consumePassword(), group: group) {
+                model.delete(paths: targets, password: nil, group: group)
+            }
             selected.removeAll()
         } else {
             guard let destination = chooseFolderPanel(title: "移动所选文件到…") else { return }
@@ -1278,6 +1300,8 @@ struct PaneView: View {
     // MARK: - Menu bridge
 
     private func installMenuActions() {
+        // 焦点切换后归档开关状态以本窗格为准（菜单「关闭压缩包 ⌘W」门控用）。
+        actions.archiveOpen = inArchive
         actions.openArchive = chooseArchivePanel
         actions.createArchive = chooseSourcesForCompression
         actions.closeArchive = closeArchive
@@ -1441,11 +1465,19 @@ struct PaneView: View {
             // 另一窗格在磁盘目录：归档侧解压（移动 = 解压后从归档删除），本地侧拷贝/移动。
             if inArchive {
                 let targets = expandedArchiveSelection
+                // 只读归档（嵌套/rar）无法删除：「移动」必须明示拒绝，
+                // 否则静默退化成复制（用户以为源已删除）。
+                if move, !canEditArchive {
+                    model.warn("当前归档为只读，无法移动；请使用复制。")
+                    return
+                }
                 // 依赖组：解压失败时删除必须取消（移动退化成删除的数据丢失路径）。
+                // extract 前置校验不过会拒绝入队并返回 false——此时绝不能调 delete。
                 let group = move ? UUID() : nil
-                model.extract(to: destination, paths: targets, conflict: conflict,
-                              password: consumePassword(), group: group)
-                if move, canEditArchive { model.delete(paths: targets, password: nil, group: group) }
+                if model.extract(to: destination, paths: targets, conflict: conflict,
+                                 password: consumePassword(), group: group), move {
+                    model.delete(paths: targets, password: nil, group: group)
+                }
                 selected.removeAll()
             } else {
                 var failed = 0

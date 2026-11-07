@@ -32,8 +32,11 @@ struct IconListView: NSViewRepresentable {
 
         collection.dataSource = context.coordinator
         collection.delegate = context.coordinator
-        collection.menuProvider = { [weak coordinator = context.coordinator] event in
-            coordinator?.menu(for: event, in: collection)
+        // 闭包存回 collection 自身，必须弱引用捕获，否则循环泄漏
+        // （同 FileListView 的 [weak table]）。
+        collection.menuProvider = { [weak coordinator = context.coordinator, weak collection] event in
+            guard let collection else { return nil }
+            return coordinator?.menu(for: event, in: collection)
         }
 
         let scroll = NSScrollView()
@@ -55,13 +58,19 @@ struct IconListView: NSViewRepresentable {
         guard let collection = context.coordinator.collection else { return }
         collection.reloadData()
         let indexes = rows.indices.filter { selection.contains(rows[$0].id) }
+        // 程序化选择同步也会触发 didSelect/didDeselect 回调，加标志位避免
+        // 状态刷新被误认为用户交互（双窗格下会盗取焦点）。
+        context.coordinator.isSyncingSelection = true
         collection.selectionIndexPaths = Set(indexes.map { IndexPath(item: $0, section: 0) })
+        context.coordinator.isSyncingSelection = false
     }
 
     @MainActor
     final class Coordinator: NSObject, NSCollectionViewDataSource, NSCollectionViewDelegate {
         var parent: IconListView
         weak var collection: NSCollectionView?
+        /// updateNSView 程序化同步选择期间为 true：跳过 onInteraction（防焦点盗取）。
+        var isSyncingSelection = false
 
         init(_ parent: IconListView) { self.parent = parent }
 
@@ -79,13 +88,13 @@ struct IconListView: NSViewRepresentable {
 
         func collectionView(_ collectionView: NSCollectionView,
                             didSelectItemsAt indexPaths: Set<IndexPath>) {
-            parent.onInteraction()
+            if !isSyncingSelection { parent.onInteraction() }
             syncSelection(collectionView)
         }
 
         func collectionView(_ collectionView: NSCollectionView,
                             didDeselectItemsAt indexPaths: Set<IndexPath>) {
-            parent.onInteraction()
+            if !isSyncingSelection { parent.onInteraction() }
             syncSelection(collectionView)
         }
 
@@ -132,6 +141,12 @@ struct IconListView: NSViewRepresentable {
                 menuItem.target = self
                 menuItem.isEnabled = spec.enabled
                 menuItem.representedObject = Box(spec.action)
+                if spec.destructive, spec.enabled {
+                    // 危险操作红色显示（与 FileListView 一致）。
+                    menuItem.attributedTitle = NSAttributedString(
+                        string: spec.title,
+                        attributes: [.foregroundColor: NSColor.systemRed])
+                }
                 menu.addItem(menuItem)
             }
             return menu
