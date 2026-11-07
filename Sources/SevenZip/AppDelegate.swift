@@ -5,9 +5,23 @@ import AppKit
 /// - 双击压缩包、「打开方式」触发的文件打开事件
 /// 统一转发给 AppActions.shared，由 ContentView 安装的实际处理器执行。
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// 本次启动是否已收到 URL 打开事件（命令 URL 或双击归档）。
+    private var receivedURLOpen = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = self
-        Task { @MainActor in AppActions.shared.applyAppearanceOnLaunch() }
+        Task { @MainActor in
+            AppActions.shared.applyAppearanceOnLaunch()
+            AppMenuBuilder.shared.install()
+        }
+        // 主窗口按需创建（AppActions.requestMainScene → MainWindowController）。
+        // Dock 启动没有任何 URL 事件，0.5s 后兜底开主窗口；命令 URL 冷启动由
+        // 路由决定要不要主窗口，「添加到压缩包」类对话框命令则永远不开。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if !self.receivedURLOpen {
+                Task { @MainActor in AppActions.shared.requestMainScene() }
+            }
+        }
         // 启动后延迟静默检查更新（可在 帮助 → 启动时检查更新 关闭）。
         Task {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -44,10 +58,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Finder 双击已注册的归档类型时由 LaunchServices 投递。
-    /// sevenzip:// 命令主要由 SwiftUI .onOpenURL 投递（WindowGroup 场景下
-    /// 本回调只会收到空数组）；这里保留兜底以防系统走 AppDelegate 路径。
+    /// 所有 URL 打开的统一入口：Finder 双击归档（文件）与 sevenzip:// 命令。
+    /// 场景侧刻意不挂 .onOpenURL / handlesExternalEvents（会让系统为命令新建
+    /// 主窗口），因此两类 URL 都会送达本回调。
     func application(_ application: NSApplication, open urls: [URL]) {
+        receivedURLOpen = true
         NSApp.activate(ignoringOtherApps: true)
         Task { @MainActor in
             let fileURLs = urls.filter { $0.isFileURL }
@@ -56,6 +71,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 AppActions.shared.routeCommandURL(url)
             }
         }
+    }
+
+    /// Dock 图标点击（无可见窗口时重开主窗口）。
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        Task { @MainActor in AppActions.shared.requestMainScene() }
+        return false
     }
 
     @objc func serviceOpenArchives(_ pboard: NSPasteboard, userData: String?,
@@ -82,7 +103,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         NSApp.activate(ignoringOtherApps: true)
-        Task { @MainActor in action(urls) }
+        Task { @MainActor in
+            // 服务命令都在主窗口里呈现（打开/解压/压缩所选），冷启动需先建场景。
+            AppActions.shared.requestMainScene()
+            action(urls)
+        }
     }
 
     /// 服务剪贴板同时携带新式 fileURL 条目与旧式 NSFilenamesPboardType，两者都要兼容。

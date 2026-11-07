@@ -1,6 +1,43 @@
 import AppKit
 import SwiftUI
 
+/// 主窗口控制器（AppKit 承载 ContentView）。
+/// 为什么不用 WindowGroup：SwiftUI 场景在启动/URL 事件时自动开窗，事后
+/// close/orderOut/dismissWindow 都无法清除 WindowServer 上的窗口（幽灵窗口），
+/// 实测「添加到压缩包」命令会带出一到两个主窗口。改为完全手动管理：
+/// 只有明确需要主窗口的路径（Dock 启动/重开、双击归档、解压等命令）才调用 show()。
+@MainActor
+final class MainWindowController: NSObject, NSWindowDelegate {
+    static let shared = MainWindowController()
+    private(set) var window: NSWindow?
+
+    func show() {
+        if let window {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        let root = ContentView().environmentObject(AppActions.shared)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 940, height: 600),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered, defer: false)
+        window.title = "七压"
+        window.minSize = NSSize(width: 940, height: 560)
+        window.contentView = NSHostingView(rootView: root)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        self.window = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    nonisolated func windowWillClose(_ notification: Notification) {
+        Task { @MainActor in self.window = nil }
+    }
+}
+
 /// 双窗格外壳（7zFM F9）：承载 1~2 个 PaneView，跟踪焦点窗格，
 /// 安装 F5/F6/F9 功能键监听。菜单处理器由焦点窗格自行安装。
 struct ContentView: View {

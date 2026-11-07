@@ -127,6 +127,10 @@ final class AppActions: ObservableObject {
     }
     var handlersInstalled = false
     var pendingServices: [PendingService] = []
+    /// 需要主窗口的路径（Dock 启动/重开、双击归档、解压等命令）调用：
+    /// 主窗口由 MainWindowController 手动管理，不用 WindowGroup 场景（场景
+    /// 自动开出的窗口事后无法清除，见 MainWindowController 注释）。
+    func requestMainScene() { MainWindowController.shared.show() }
     var openFiles: ([URL]) -> Void = { _ in }
     var extractInPlace: ([URL]) -> Void = { _ in }
     var extractToNamedFolder: ([URL]) -> Void = { _ in }
@@ -138,6 +142,7 @@ final class AppActions: ObservableObject {
     var checksumFiles: ([URL], String) -> Void = { _, _ in }
 
     func routeOpenFiles(_ urls: [URL]) {
+        requestMainScene()
         if handlersInstalled { openFiles(urls) } else { pendingServices.append(.open(urls)) }
     }
     func routeExtractInPlace(_ urls: [URL]) {
@@ -178,15 +183,17 @@ final class AppActions: ObservableObject {
         let format = components.queryItems?.first { $0.name == "format" }?.value ?? "zip"
         let algorithm = components.queryItems?.first { $0.name == "algo" }?.value ?? "SHA256"
         switch url.host {
-        case "extract": routeExtractInPlace(files)
-        case "extract-folder": routeExtractToNamedFolder(files)
-        case "extract-choose": routeExtractChooseDestination(files)
-        case "test": routeTestArchives(files)
-        case "add-dialog": routeAddToArchiveDialog(files)
-        case "compress-email-dialog": routeAddToArchiveDialog(files, email: true)
-        case "compress": routeCompressInPlace(files, format: format)
-        case "compress-email": routeCompressAndEmail(files, format: format)
-        case "checksum": routeChecksumFiles(files, algorithm: algorithm)
+        case "add-dialog", "compress-email-dialog":
+            // 独立对话框承载，不需要主窗口：不置 mainSceneDesired，冷启动时
+            // App body 保持占位场景，主窗口从一开始就不存在。
+            CompressDialogController.shared.show(sources: files, email: url.host == "compress-email-dialog")
+        case "extract": requestMainScene(); routeExtractInPlace(files)
+        case "extract-folder": requestMainScene(); routeExtractToNamedFolder(files)
+        case "extract-choose": requestMainScene(); routeExtractChooseDestination(files)
+        case "test": requestMainScene(); routeTestArchives(files)
+        case "compress": requestMainScene(); routeCompressInPlace(files, format: format)
+        case "compress-email": requestMainScene(); routeCompressAndEmail(files, format: format)
+        case "checksum": requestMainScene(); routeChecksumFiles(files, algorithm: algorithm)
         default: routeOpenFiles(files)
         }
     }

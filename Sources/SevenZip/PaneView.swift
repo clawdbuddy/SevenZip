@@ -281,15 +281,8 @@ struct PaneView: View {
             retryPasswordSheet
         }
         .quickLookPreview($model.previewURL)
-        .onOpenURL { url in
-            // WindowGroup 场景下自定义 scheme 也投递到这里：文件直接打开，
-            // sevenzip:// 命令经 AppActions 路由（仅焦点窗格响应，避免双窗格重复执行）。
-            if url.isFileURL {
-                openArchive(url)
-            } else if url.scheme == "sevenzip", isFocused {
-                actions.routeCommandURL(url)
-            }
-        }
+        // URL 打开（文件与 sevenzip:// 命令）全部由 AppDelegate → AppActions 路由；
+        // 场景侧挂 .onOpenURL 会让系统为命令 URL 新建主窗口，故此处不挂。
         .onAppear {
             refreshLocal()
             // 只有焦点窗格安装菜单处理器；非焦点窗格安装跨窗格接收钩子。
@@ -563,25 +556,15 @@ struct PaneView: View {
         options.password.isEmpty || options.password == passwordConfirm
     }
 
-    /// 双栏布局压缩对话框（对齐参考项目 window-add-to-archive 设计）。
+    /// 应用内「添加到压缩包」sheet：表单与 Finder 独立对话框共用（CompressFormView）。
     private var compressionSheet: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("添加到压缩包").font(.title2)
-
-            // 归档路径：目录标签 + 路径输入 + 浏览（对齐参考图 Archive 行）。
-            Text(URL(fileURLWithPath: archiveDestPath).deletingLastPathComponent().path)
-                .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-            HStack(spacing: 8) {
-                Text("归档:").frame(width: Self.labelWidth, alignment: .leading)
-                TextField("归档路径", text: $archiveDestPath)
-                Button("…") { browseArchiveDestination() }.frame(width: 28)
-            }
-
-            HStack(alignment: .top, spacing: 28) {
-                compressionSheetLeftColumn
-                compressionSheetRightColumn
-            }
-
+            Text("选中 \(sourcesForCompression.count) 个项目").foregroundStyle(.secondary).font(.callout)
+            CompressFormView(options: $options, passwordConfirm: $passwordConfirm,
+                             showCompressPassword: $showCompressPassword,
+                             archiveDestPath: $archiveDestPath,
+                             onBrowse: browseArchiveDestination)
             HStack {
                 Button("帮助") {
                     if let url = URL(string: "https://github.com/clawdbuddy/SevenZip#readme") {
@@ -598,167 +581,6 @@ struct PaneView: View {
         }
         .padding(20)
         .frame(width: 720, height: 600)
-        .onChange(of: options.format) { newFormat in
-            archiveDestPath = ((archiveDestPath as NSString).deletingPathExtension as String)
-                + "." + newFormat.rawValue
-            if newFormat == .tar { options.password = ""; passwordConfirm = "" }
-        }
-    }
-
-    private static let labelWidth: CGFloat = 96
-    private static let controlWidth: CGFloat = 200
-
-    @ViewBuilder
-    private func labelRow<Content: View>(_ title: String,
-                                         @ViewBuilder content: () -> Content) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(title).frame(width: Self.labelWidth, alignment: .leading)
-            content()
-            Spacer(minLength: 0)
-        }
-    }
-
-    /// 左侧栏：格式/级别/方法/字典/词长/固实块/线程/内存估算/分卷/参数。
-    private var compressionSheetLeftColumn: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            labelRow("压缩格式:") {
-                Picker("", selection: $options.format) {
-                    ForEach(ArchiveFormat.allCases) { Text($0.title).tag($0) }
-                }.labelsHidden().frame(width: Self.controlWidth)
-            }
-            labelRow("压缩级别:") {
-                Picker("", selection: $options.level) {
-                    ForEach(0...9, id: \.self) { Text(CompressionOptions.levelTitle($0)).tag($0) }
-                }.labelsHidden().frame(width: Self.controlWidth)
-            }
-            if options.format != .tar {
-                labelRow("压缩方法:") {
-                    Picker("", selection: $options.method) {
-                        ForEach(CompressionOptions.methodChoices(for: options.format), id: \.self) { m in
-                            Text(m.isEmpty ? "默认" : (m == "Copy" ? "Copy（仅存储）" : m)).tag(m)
-                        }
-                    }.labelsHidden().frame(width: Self.controlWidth)
-                }
-                labelRow("字典大小:") {
-                    Picker("", selection: $options.dictionaryMB) {
-                        Text("默认").tag(0)
-                        ForEach([1, 4, 8, 16, 32, 64, 128], id: \.self) { Text("\($0) MB").tag($0) }
-                    }.labelsHidden().frame(width: Self.controlWidth)
-                }
-                labelRow("词长:") {
-                    Picker("", selection: $options.wordSize) {
-                        Text("默认").tag(0)
-                        ForEach([32, 64, 128, 273], id: \.self) { Text("\($0)").tag($0) }
-                    }.labelsHidden().frame(width: Self.controlWidth)
-                }
-                if options.format == .sevenZip {
-                    labelRow("固实块大小:") {
-                        Picker("", selection: $options.solidBlockMB) {
-                            ForEach(CompressionOptions.solidBlockChoices, id: \.self) {
-                                Text(CompressionOptions.solidBlockTitle($0)).tag($0)
-                            }
-                        }.labelsHidden().frame(width: Self.controlWidth)
-                    }
-                }
-                labelRow("CPU 线程数:") {
-                    HStack(spacing: 6) {
-                        Picker("", selection: $options.threads) {
-                            Text("自动").tag(0)
-                            ForEach(1...max(ProcessInfo.processInfo.processorCount, 1), id: \.self) {
-                                Text("\($0)").tag($0)
-                            }
-                        }.labelsHidden().frame(width: 110)
-                        Text("/ \(ProcessInfo.processInfo.processorCount)").foregroundStyle(.secondary)
-                    }
-                }
-                if let estimate = memoryEstimate {
-                    Text(estimate).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            labelRow("分卷大小（MB):") {
-                TextField("", value: $options.volumeMB, format: .number)
-                    .frame(width: Self.controlWidth)
-            }
-            labelRow("参数:") {
-                TextField("透传给 7zz 的额外开关", text: $options.extraParams)
-                    .frame(width: Self.controlWidth)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
-    /// 右侧栏：更新模式/路径模式/选项/加密。
-    private var compressionSheetRightColumn: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if options.format != .tar {
-                labelRow("更新模式:") {
-                    Picker("", selection: $options.updateMode) {
-                        ForEach(UpdateMode.allCases) { Text($0.title).tag($0) }
-                    }.labelsHidden().frame(width: Self.controlWidth)
-                }
-            }
-            labelRow("路径模式:") {
-                Picker("", selection: $options.keepTopName) {
-                    Text("相对路径名").tag(true)
-                    Text("不含顶层文件夹").tag(false)
-                }.labelsHidden().frame(width: Self.controlWidth)
-            }
-            GroupBox("选项") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Toggle("压缩共享文件（-ssw）", isOn: $options.compressSharedFiles)
-                    Toggle("排除 .DS_Store 和 __MACOSX", isOn: $options.excludeMacMetadata)
-                    Toggle("排除 Mac 资源叉（._* 文件）", isOn: $options.excludeResourceForks)
-                    Toggle("压缩成功后删除源文件", isOn: $options.deleteAfterCompress)
-                    if options.deleteAfterCompress {
-                        Text("源文件将被永久删除（不进废纸篓）。")
-                            .font(.caption).foregroundStyle(.red)
-                    }
-                }.padding(6)
-            }
-            GroupBox("加密") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("输入密码:").font(.callout)
-                    passwordField(text: $options.password)
-                    Text("再次输入:").font(.callout)
-                    passwordField(text: $passwordConfirm)
-                    HStack {
-                        Toggle("显示密码", isOn: $showCompressPassword)
-                        if !passwordsMatch {
-                            Text("两次输入不一致").foregroundStyle(.red).font(.caption)
-                        }
-                    }
-                    if options.format == .zip, !options.password.isEmpty {
-                        Picker("加密方法", selection: $options.zipEncryption) {
-                            Text("AES-256").tag("AES256")
-                            Text("ZipCrypto（兼容旧系统）").tag("ZipCrypto")
-                        }
-                    }
-                    if options.format == .sevenZip {
-                        Toggle("同时加密文件名", isOn: $options.encryptFileNames)
-                            .disabled(options.password.isEmpty)
-                    }
-                }.padding(6)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
-    @ViewBuilder
-    private func passwordField(text: Binding<String>) -> some View {
-        if showCompressPassword {
-            TextField("", text: text)
-        } else {
-            SecureField("", text: text)
-        }
-    }
-
-    /// 字典选定且方法为 LZMA 系时的内存占用估算（压缩 ≈ 字典×11，解压 ≈ 字典）。
-    private var memoryEstimate: String? {
-        guard options.dictionaryMB > 0 else { return nil }
-        let method = options.method.isEmpty
-            ? (options.format == .sevenZip ? "LZMA2" : "Deflate") : options.method
-        guard ["LZMA2", "LZMA"].contains(method) else { return nil }
-        return "内存占用估算：压缩 ≈ \(options.dictionaryMB * 11) MB · 解压 ≈ \(options.dictionaryMB) MB"
     }
 
     /// 解压对话框：目标目录（可手输或浏览）、同名子文件夹、路径模式（完整/平铺）、
@@ -1354,10 +1176,7 @@ struct PaneView: View {
 
     /// 对话框默认归档路径：源文件父目录 + 基础名 + 当前格式扩展名。
     private func defaultArchiveDestination() -> String {
-        guard let first = sourcesForCompression.first else { return "" }
-        let base = Self.baseName(for: sourcesForCompression)
-        return first.deletingLastPathComponent()
-            .appendingPathComponent(base + "." + options.format.rawValue).path
+        CompressDestination.defaultPath(sources: sourcesForCompression, format: options.format)
     }
 
     private func browseArchiveDestination() {
@@ -1367,15 +1186,6 @@ struct PaneView: View {
         panel.directoryURL = URL(fileURLWithPath: archiveDestPath).deletingLastPathComponent()
         panel.canCreateDirectories = true
         if panel.runModal() == .OK, let url = panel.url { archiveDestPath = url.path }
-    }
-
-    private func confirmOverwrite(_ url: URL) -> Bool {
-        let alert = NSAlert()
-        alert.messageText = "更新已存在的归档？"
-        alert.informativeText = "「\(url.lastPathComponent)」已存在，将按所选更新模式写入该归档。"
-        alert.addButton(withTitle: "继续")
-        alert.addButton(withTitle: "取消")
-        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func finalizeCompression() {
@@ -1388,17 +1198,15 @@ struct PaneView: View {
             showCompressionSheet = false
             return
         }
-        let raw = archiveDestPath.trimmingCharacters(in: .whitespaces)
-        guard !raw.isEmpty else {
+        guard let url = CompressDestination.normalize(archiveDestPath, format: options.format) else {
             model.warn("请填写归档保存路径。")
             return
         }
-        // 扩展名与所选格式保持一致（用户手改路径时兜底）。
-        var url = URL(fileURLWithPath: raw)
-        if url.pathExtension.lowercased() != options.format.rawValue {
-            url = url.deletingPathExtension().appendingPathExtension(options.format.rawValue)
+        // ArchiveModel 出于安全拒绝覆盖已有文件：用户确认后先移除再创建。
+        if FileManager.default.fileExists(atPath: url.path) {
+            guard CompressDestination.confirmOverwrite(url) else { return }
+            try? FileManager.default.removeItem(at: url)
         }
-        if FileManager.default.fileExists(atPath: url.path), !confirmOverwrite(url) { return }
         model.compress(sources: sourcesForCompression, destination: url, options: options,
                        emailAfter: emailAfterCreate)
         emailAfterCreate = false
