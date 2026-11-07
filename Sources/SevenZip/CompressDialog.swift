@@ -311,7 +311,8 @@ struct StandaloneCompressView: View {
             try? FileManager.default.removeItem(at: url)
         }
         submitted = true
-        model.compress(sources: sources, destination: url, options: options, emailAfter: email)
+        model.compress(sources: sources, destination: url, options: options,
+                       emailAfter: email, openAfter: false)
     }
 }
 

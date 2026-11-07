@@ -33,7 +33,7 @@ final class ArchiveModel: ObservableObject {
     }
 
     private enum Completion {
-        case listing(URL), created(URL), createdForEmail(URL), batchCreated(URL), extracted(ExtractCompletion), preview(URL, String, [String: String]),
+        case listing(URL), created(URL), createdSilent(URL), createdForEmail(URL), batchCreated(URL), extracted(ExtractCompletion), preview(URL, String, [String: String]),
              nested(URL, String, [String: String]),
              batchPreflight(URL, URL, ConflictPolicy, String?, ExtractPathMode),
              conversionExtracted(URL, URL, ArchiveFormat, String?), converted(URL, URL), tested(URL?), edited(URL), hash
@@ -65,14 +65,19 @@ final class ArchiveModel: ObservableObject {
     func dismissPasswordRequest() { passwordNeededFor = nil }
 
     func compress(sources: [URL], destination: URL, options: CompressionOptions,
-                  emailAfter: Bool = false) {
+                  emailAfter: Bool = false, openAfter: Bool = true) {
         guard !FileManager.default.fileExists(atPath: destination.path) else {
             report("目标文件已存在；请更换压缩包名称，以免意外修改已有文件。")
             return
         }
         do {
             let command = try ArchiveCommands.create(sources: sources, archive: destination, options: options)
-            enqueue(command, completion: emailAfter ? .createdForEmail(destination) : .created(destination))
+            // openAfter=false（独立「添加到压缩包」对话框）：完成后不再把新归档
+            // 载入列表——无主窗口可显示，且清单状态会覆盖「已创建」，破坏
+            // 对话框「创建成功 → 自动关窗」的判定。
+            let completion: Completion = emailAfter ? .createdForEmail(destination)
+                : (openAfter ? .created(destination) : .createdSilent(destination))
+            enqueue(command, completion: completion)
         } catch { report(error.localizedDescription) }
     }
 
@@ -473,6 +478,9 @@ final class ArchiveModel: ObservableObject {
             // 不打开归档，仅通知界面发起邮件分享（Finder「压缩并邮件」）。
             emailShareURL = archive
             status = "已创建 \(archive.lastPathComponent)，正在调出邮件…"
+        case .createdSilent(let archive):
+            // 独立对话框场景：只报状态，不载入归档（对话框据此自动关窗）。
+            status = "已创建 \(archive.lastPathComponent)"
         case .created(let archive):
             status = "已创建 \(archive.lastPathComponent)"
             let firstVolume = archive.appendingPathExtension("001")
