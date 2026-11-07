@@ -7,7 +7,8 @@ import UniformTypeIdentifiers
 /// 文件夹与压缩包用的是系统真实图标（蓝色渐层文件夹、纸箱式压缩包图标），
 /// 符号加棕色 tint 会显得很「非 macOS」。这里的规则：
 /// - 文件夹：系统真实文件夹图标；
-/// - 压缩包：系统真实压缩包图标（zip 有；7z/rar 等用 archivebox 符号兜底）；
+/// - 压缩包：按扩展名取该格式的系统图标（7z/rar/tar 各有自己的徽标），
+///   认不出才用通用归档箱；
 /// - 普通文件：按扩展名取系统真实文档图标（访达同款），认不出时才用符号；
 /// - 「..」：次级文字色的符号。
 enum FileIcons {
@@ -42,15 +43,19 @@ enum FileIcons {
         return Icon(image: systemIcon(type), tint: nil)
     }
 
-    /// 压缩包图标：zip 用系统压缩包图标（拉链纸箱），其余压缩格式用系统的
-    /// 通用归档箱图标。
+    /// 压缩包图标：按扩展名取该格式的系统图标。
+    ///
+    /// macOS 为 7z/rar/tar 等格式注册了各自的 UTI 与图标（7Z 徽标、TAR 徽标），
+    /// 按扩展名查就能拿到对应的品牌化图标；查不到才退回通用的归档箱图标。
     ///
     /// 不用 SF Symbol 的 archivebox：那是空心描边图形，和系统实心归档箱
     /// 并排放会显得不是一套。
     private static func archiveIcon(_ row: FileListRow) -> Icon {
         let ext = (row.name as NSString).pathExtension.lowercased()
-        if ext == "zip" {
-            return Icon(image: systemIcon(.zip), tint: nil)
+        if !ext.isEmpty, let type = UTType(filenameExtension: ext), type != .data {
+            let image = systemIcon(type)
+            // 通用归档类型（.archive/.data）没有专属图标，退回归档箱。
+            if type.conforms(to: .archive), type != .archive { return Icon(image: image, tint: nil) }
         }
         return Icon(image: systemIcon(.archive), tint: nil)
     }
