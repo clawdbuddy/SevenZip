@@ -734,14 +734,24 @@ struct PaneView: View {
 
     /// 文件类型关联面板：自包含，onAppear 时自行加载状态，
     /// 不依赖外部 @State 的赋值时序。
-    private var aboutSheet: some View {        VStack(spacing: 12) {
+    private var aboutSheet: some View {
+        VStack(spacing: 12) {
             Image(systemName: "archivebox.fill").font(.system(size: 44)).foregroundStyle(Color.accentColor)
             Text("七压 SevenZip").font(.title2)
+            // 版本号读 Info.plist（构建脚本在打包时从 git 标签盖印），
+            // 与「显示简介」、更新检查器看到的始终是同一个版本。
+            Text("版本 \(appVersionString)")
+                .foregroundStyle(.secondary)
             Text("7-Zip 26.05 · 原生 Apple Silicon · SwiftUI").foregroundStyle(.secondary)
             Text("界面范式参照 Windows 7-Zip File Manager。").font(.caption)
             Button("关闭") { showAbout = false }.keyboardShortcut(.defaultAction)
         }
         .padding(30)
+    }
+
+    /// 应用版本号（CFBundleShortVersionString），读不到时给占位串。
+    private var appVersionString: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "-"
     }
 
     private var passwordSheet: some View {
@@ -1154,20 +1164,6 @@ struct PaneView: View {
         model.batchExtract(archives: panel.urls, to: directory, conflict: conflict, password: consumePassword())
     }
 
-    private func chooseConversion() {
-        guard let source = model.archiveURL else { return }
-        let outputFormat: ArchiveFormat = source.pathExtension.lowercased() == "7z" ? .zip : .sevenZip
-        let panel = NSSavePanel()
-        panel.title = "将归档转换为 7z / ZIP / TAR"
-        panel.nameFieldStringValue = source.deletingPathExtension().lastPathComponent + "." + outputFormat.rawValue
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-        guard let format = ArchiveFormat(rawValue: destination.pathExtension.lowercased()) else {
-            model.warn("目标格式仅支持 7z、ZIP 或 TAR。")
-            return
-        }
-        model.convert(to: destination, format: format, password: consumePassword())
-    }
-
     private func chooseFolderPanel(title: String) -> URL? {
         let panel = NSOpenPanel()
         panel.title = title
@@ -1253,7 +1249,6 @@ struct PaneView: View {
         }
         actions.batchExtract = chooseBatchExtraction
         actions.batchCompress = chooseBatchCompression
-        actions.convert = chooseConversion
         actions.checksum = { [model] algorithm in if inArchive { model.checksum(algorithm: algorithm) } }
         actions.copyToOtherPane = { transferToOtherPane(move: false) }
         actions.moveToOtherPane = { transferToOtherPane(move: true) }

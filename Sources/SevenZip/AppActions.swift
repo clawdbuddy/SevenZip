@@ -23,7 +23,6 @@ final class AppActions: ObservableObject {
     var invertSelection: () -> Void = {}
     var batchExtract: () -> Void = {}
     var batchCompress: () -> Void = {}
-    var convert: () -> Void = {}
     var checksum: (String) -> Void = { _ in }
     var toggleLog: () -> Void = {}
     var enterPassword: () -> Void = {}

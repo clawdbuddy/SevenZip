@@ -147,7 +147,6 @@ final class AppMenuBuilder: NSObject {
         let menu = NSMenu(title: "工具")
         menu.addItem(title: "批量解压…", key: "", tag: "batchExtract", symbol: "square.and.arrow.down")
         menu.addItem(title: "批量压缩…", key: "", tag: "batchCompress", symbol: "plus")
-        menu.addItem(title: "格式转换…", key: "", tag: "convert", symbol: "arrow.triangle.2.circlepath")
         menu.addItem(.separator())
         let checksumMenu = NSMenu(title: "计算校验和")
         for algo in ["CRC32", "CRC64", "SHA1", "SHA256", "SHA512", "BLAKE2sp"] {
@@ -227,7 +226,6 @@ final class AppMenuBuilder: NSObject {
         case "toggleLog": actions.toggleLog()
         case "batchExtract": actions.batchExtract()
         case "batchCompress": actions.batchCompress()
-        case "convert": actions.convert()
         case "enterPassword": actions.enterPassword()
         case "benchmark": BenchmarkWindowController.shared.show()
         case "fileAssociation": actions.fileAssociation()
@@ -306,7 +304,7 @@ extension AppMenuBuilder: NSMenuItemValidation {
         "closeArchive", "selectAll", "deselectAll", "invertSelection",
         "renameSelection", "deleteSelection", "refresh", "goUp", "toggleLog",
         "openArchive", "createArchive", "batchExtract", "batchCompress",
-        "convert", "enterPassword", "toggleDualPane",
+        "enterPassword", "toggleDualPane",
     ]
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {

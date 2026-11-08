@@ -2,8 +2,10 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source_archive="$project_root/third_party/7z2605-src.tar.xz"
-source_root="$project_root/.build-7zip/7zip-26.05"
+# 7-Zip 官方源码以 git 子模块固定（third_party/7zip，pin 在版本标签），
+# 不再使用下载的 tar 包：来源可审计、升级=改子模块指针。
+submodule_root="$project_root/third_party/7zip"
+source_root="$project_root/.build-7zip/7zip-src"
 dist_root="$project_root/dist"
 app_root="$dist_root/SevenZip.app"
 
@@ -21,21 +23,25 @@ for executable in xcodebuild xcrun swift make clang tar codesign shasum ditto hd
         exit 1
     fi
 done
-if [[ ! -f "$source_archive" ]]; then
-    echo "缺少官方 7-Zip 26.05 源码：$source_archive" >&2
+# 子模块未检出时（刚 clone 的仓库、CI 未递归检出）自动初始化。
+if [[ ! -f "$submodule_root/DOC/readme.txt" ]]; then
+    echo "检出 7-Zip 源码子模块（third_party/7zip）…"
+    git -C "$project_root" submodule update --init -- third_party/7zip
+fi
+if [[ ! -f "$submodule_root/DOC/readme.txt" ]]; then
+    echo "缺少 7-Zip 源码子模块：$submodule_root" >&2
+    echo "请执行：git submodule update --init" >&2
     exit 1
 fi
-expected_sha256="0b6080b8c3e7a579161d2d495224c0e51c467576cb4c7048b0ab485ef44cc22e"
-actual_sha256="$(shasum -a 256 "$source_archive" | awk '{ print $1 }')"
-if [[ "$actual_sha256" != "$expected_sha256" ]]; then
-    echo "7-Zip 源码校验失败：期望 $expected_sha256，实际 $actual_sha256" >&2
-    exit 1
-fi
+submodule_commit="$(git -C "$submodule_root" rev-parse --short=12 HEAD)"
+echo "7-Zip 源码子模块：$(git -C "$submodule_root" describe --tags 2>/dev/null || echo "$submodule_commit") ($submodule_commit)"
 
-echo "[1/5] 解包 7-Zip 官方源码"
+echo "[1/5] 准备 7-Zip 源码（子模块副本，保持子模块目录干净）"
 mkdir -p "$source_root" "$dist_root"
 if [[ ! -f "$source_root/DOC/readme.txt" ]]; then
-    tar -xJf "$source_archive" -C "$source_root"
+    # 拷贝而非就地构建：make 的中间产物（b/ 目录）会弄脏子模块工作区。
+    # 源码变更后需 rm -rf .build-7zip 才会重新拷贝。
+    rsync -a --exclude=.git "$submodule_root/" "$source_root/"
 fi
 
 echo "[2/5] 从源码编译 ARM64 7zz 引擎（官方 cmpl_mac_arm64.mak）"
@@ -121,6 +127,18 @@ cp "$gui_binary" "$app_root/Contents/MacOS/SevenZip"
 cp "$cli_binary" "$app_root/Contents/MacOS/SevenZipCLI"
 cp "$engine" "$app_root/Contents/Resources/bin/7zz"
 cp "$project_root/Resources/Info.plist" "$app_root/Contents/Info.plist"
+# 版本号以 git 标签为准（v1.0.0 → 1.0.0），构建号取提交计数——
+# 之前是 Info.plist 里的硬编码，发 v1.0.0 时应用内仍显示 0.4.0。
+# 无标签的本地开发构建落到 0.0.0，不会冒充发布版本。
+app_version="0.0.0"
+if git_tag="$(git -C "$project_root" describe --tags --abbrev=0 2>/dev/null)"; then
+    app_version="${git_tag#v}"
+fi
+build_number="$(git -C "$project_root" rev-list --count HEAD 2>/dev/null || echo 0)"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $app_version" \
+    "$app_root/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" \
+    "$app_root/Contents/Info.plist"
 cp "$project_root/Resources/AppIcon.icns" "$app_root/Contents/Resources/AppIcon.icns"
 # 各归档类型的 Finder 文档图标（由 scripts/make-type-icons.swift 预生成并提交）
 if [[ -d "$project_root/Resources/TypeIcons" ]]; then
