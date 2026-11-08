@@ -4,7 +4,7 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app_path="${1:-$project_root/dist/SevenZip.app}"
-dmg_path="${2:-$project_root/dist/SevenZip-macOS-arm64.dmg}"
+dmg_path="${2:-$(ls -t "$project_root"/dist/SevenZip-*-macOS-arm64.dmg 2>/dev/null | head -1)}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "错误：生成 macOS DMG 需要在 Mac 上运行 hdiutil。" >&2

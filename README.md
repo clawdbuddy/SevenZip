@@ -49,8 +49,8 @@ open dist/SevenZip.app
 | 产物 | 说明 |
 | --- | --- |
 | `dist/SevenZip.app` | 可直接运行的应用（ad-hoc 签名） |
-| `dist/SevenZip-macOS-arm64.zip` | 分发压缩包 |
-| `dist/SevenZip-macOS-arm64.dmg` | 拖拽安装磁盘镜像 |
+| `dist/SevenZip-<版本>-macOS-arm64.zip` | 分发压缩包（文件名带版本号，如 SevenZip-1.1.0-macOS-arm64.zip） |
+| `dist/SevenZip-<版本>-macOS-arm64.dmg` | 拖拽安装磁盘镜像 |
 
 构建脚本会校验内置的 7-Zip 官方源码包 SHA-256，按官方 `cmpl_mac_arm64.mak` 编译 `7zz`，再编译 SwiftUI 应用并打包签名。纯 CLT 环境自动回退到兼容 SDK（macOS 27 SDK 起 `@State` 依赖仅随完整 Xcode 分发的宏插件）。
 
@@ -113,7 +113,7 @@ bash scripts/check-engine.sh dist/SevenZip.app/Contents/Resources/bin/7zz
 bash tests/check-advanced-engine.sh dist/SevenZip.app/Contents/Resources/bin/7zz
 swift test -c release --arch arm64        # 需完整 Xcode（含 XCTest)
 codesign --verify --deep --verbose=2 dist/SevenZip.app
-hdiutil verify dist/SevenZip-macOS-arm64.dmg
+hdiutil verify dist/SevenZip-<版本>-macOS-arm64.dmg
 ```
 
 ## 安全说明

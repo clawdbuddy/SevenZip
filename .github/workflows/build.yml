@@ -32,8 +32,8 @@ jobs:
         with:
           name: SevenZip-macOS-arm64
           path: |
-            dist/SevenZip-macOS-arm64.zip
-            dist/SevenZip-macOS-arm64.dmg
+            dist/SevenZip-v*-macOS-arm64.zip
+            dist/SevenZip-v*-macOS-arm64.dmg
           retention-days: 14
 
       - name: 发布 Release（仅 v* 标签）
@@ -42,8 +42,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >
           gh release create "${GITHUB_REF_NAME}"
-          dist/SevenZip-macOS-arm64.zip
-          dist/SevenZip-macOS-arm64.dmg
+          dist/SevenZip-v*-macOS-arm64.zip
+          dist/SevenZip-v*-macOS-arm64.dmg
           --title "七压 SevenZip ${GITHUB_REF_NAME}"
           --target "${GITHUB_SHA}"
           --generate-notes

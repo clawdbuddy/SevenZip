@@ -3,7 +3,7 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-dmg_path="${1:-$project_root/dist/SevenZip-macOS-arm64.dmg}"
+dmg_path="${1:-$(ls -t "$project_root"/dist/SevenZip-*-macOS-arm64.dmg 2>/dev/null | head -1)}"
 profile="${NOTARY_PROFILE:-}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then

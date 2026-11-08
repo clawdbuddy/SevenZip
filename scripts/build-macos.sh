@@ -174,7 +174,9 @@ else
 fi
 
 echo "[5/5] 输出 app、ZIP 和 DMG 发行包"
-archive="$dist_root/SevenZip-macOS-arm64.zip"
+# 产物文件名带版本号（SevenZip-1.1.0-macOS-arm64.zip），避免多版本混在
+# 一起时只能靠时间戳区分。
+archive="$dist_root/SevenZip-${app_version}-macOS-arm64.zip"
 if [[ -e "$archive" ]]; then
     mv "$archive" "$archive.previous.$(date +%Y%m%d%H%M%S)"
 fi
@@ -182,12 +184,12 @@ ditto -c -k --sequesterRsrc --keepParent "$app_root" "$archive"
 file "$app_root/Contents/MacOS/SevenZip" "$app_root/Contents/Resources/bin/7zz"
 file "$app_root/Contents/MacOS/SevenZipCLI"
 codesign --verify --deep --verbose=2 "$app_root"
-bash "$project_root/scripts/package-dmg.sh" "$app_root" "$dist_root/SevenZip-macOS-arm64.dmg"
+bash "$project_root/scripts/package-dmg.sh" "$app_root" "$dist_root/SevenZip-${app_version}-macOS-arm64.dmg"
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
-    bash "$project_root/scripts/notarize-release.sh" "$dist_root/SevenZip-macOS-arm64.dmg"
+    bash "$project_root/scripts/notarize-release.sh" "$dist_root/SevenZip-${app_version}-macOS-arm64.dmg"
 fi
 echo "构建成功：$app_root"
 echo "可分发压缩包：$archive"
-echo "可拖拽安装的磁盘镜像：$dist_root/SevenZip-macOS-arm64.dmg"
+echo "可拖拽安装的磁盘镜像：$dist_root/SevenZip-${app_version}-macOS-arm64.dmg"
 echo "本地运行：open '$app_root'"
 echo "提示：此为 ad-hoc 签名；分发给其他 Mac 用户时需 Developer ID 签名与 notarization。"
