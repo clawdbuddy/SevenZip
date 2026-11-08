@@ -54,7 +54,9 @@ final class AppMenuBuilder: NSObject {
         menu.addItem(.separator())
         let quit = menu.addItem(withTitle: "退出七压", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.image = NSMenu.symbolImage("power")
-        item.image = NSApp.applicationIconImage
+        // 应用菜单的图标用 app 图标；菜单安装得早时图标可能还没就绪，
+        // 兜底用一个符号，保证菜单栏里一定有图标。
+        item.image = NSApp.applicationIconImage ?? NSMenu.symbolImage("archivebox")
         // 应用菜单的标题由系统按 app 名合成；一旦设了 image 就不再合成，
         // 必须显式给标题，否则菜单栏里只剩一个图标、没有「七压」两个字。
         item.title = "七压"
