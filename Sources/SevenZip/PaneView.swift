@@ -742,7 +742,7 @@ struct PaneView: View {
             // 与「显示简介」、更新检查器看到的始终是同一个版本。
             Text("版本 \(appVersionString)")
                 .foregroundStyle(.secondary)
-            Text("7-Zip 26.05 · 原生 Apple Silicon · SwiftUI").foregroundStyle(.secondary)
+            Text("7-Zip 26.06 · 原生 Apple Silicon · SwiftUI").foregroundStyle(.secondary)
             Text("界面范式参照 Windows 7-Zip File Manager。").font(.caption)
             Button("关闭") { showAbout = false }.keyboardShortcut(.defaultAction)
         }

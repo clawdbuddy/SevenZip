@@ -1,11 +1,11 @@
 # 七压 SevenZip
 
-**基于 7-Zip 26.05 官方引擎的原生 macOS 图形界面**（Apple Silicon · SwiftUI)
+**基于 7-Zip 26.06 官方引擎的原生 macOS 图形界面**（Apple Silicon · SwiftUI)
 
 [![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](LICENSE)
 [![build](https://github.com/clawdbuddy/SevenZip/actions/workflows/build.yml/badge.svg)](https://github.com/clawdbuddy/SevenZip/actions/workflows/build.yml)
 ![Platform](https://img.shields.io/badge/platform-macOS%2013%2B%20%7C%20Apple%20Silicon-lightgrey)
-![Engine](https://img.shields.io/badge/engine-7--Zip%2026.05-green)
+![Engine](https://img.shields.io/badge/engine-7--Zip%2026.06-green)
 
 官方 7-Zip 在 macOS 上只有命令行 `7zz`。本项目保留官方引擎源码原样编译，用原生 SwiftUI 实现图形界面——不是把 Windows 的 `7zFM.exe` 跨平台移植。中文名「七压」，英文名 SevenZip，随系统语言自动切换。
 
@@ -104,7 +104,7 @@ read -s P; printf '%s\n' "$P" | SevenZipCLI test encrypted.7z --password-stdin
 | `scripts/make-icon.swift` · `make-type-icons.swift` | 程序化生成应用图标与类型图标（iconset → icns) |
 | `scripts/check-engine.sh` · `tests/check-advanced-engine.sh` | 引擎端到端测试 |
 | `Tests/ArchiveCoreTests/` | XCTest 单元测试（需完整 Xcode) |
-| `third_party/7z2605-src.tar.xz` | 7-Zip 26.05 官方源码包（SHA-256 校验） |
+| `third_party/7zip` | 7-Zip 官方源码（git 子模块，pin 在版本标签，取代旧的 tar 包） |
 
 ## 验证
 
@@ -131,4 +131,4 @@ hdiutil verify dist/SevenZip-macOS-arm64.dmg
 
 - 7-Zip 官方：<https://www.7-zip.org/>
 - 官方源码仓库：<https://github.com/ip7z/7zip>
-- 引擎版本：**26.05** · 源码包 SHA-256:`0b6080b8c3e7a579161d2d495224c0e51c467576cb4c7048b0ab485ef44cc22e`
+- 引擎版本：**26.06** · 源码以 git 子模块固定（`third_party/7zip`，官方仓库 <https://github.com/ip7z/7zip> 的 `26.06` 标签，提交 `d3296e3`）

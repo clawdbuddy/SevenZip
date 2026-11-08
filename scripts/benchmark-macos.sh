@@ -20,7 +20,7 @@ trap 'rm -rf -- "$test_dir"' EXIT
 report="$project_root/dist/benchmark-$(date +%Y%m%d-%H%M%S).txt"
 
 {
-    echo "SevenZip 26.05 ARM64 benchmark"
+    echo "SevenZip 26.06 ARM64 benchmark"
     date
     sw_vers
     sysctl -n machdep.cpu.brand_string 2>/dev/null || true
