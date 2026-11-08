@@ -13,6 +13,14 @@ enum FileAssociation {
         let isOurs: Bool
         /// 当前处理者的图标。
         let handlerIcon: NSImage?
+        /// 当前处理者的完整路径（判断「是否已是归档实用工具」要用，
+        /// 只看名字会随系统语言变化）。
+        let handlerURL: URL?
+
+        /// 已经由系统自带的「归档实用工具」处理：再点「恢复系统默认」没有意义。
+        var isSystemDefault: Bool {
+            handlerURL?.standardizedFileURL.path == FileAssociation.archiveUtilityURL?.path
+        }
     }
 
     /// 七压能处理的格式（与 Windows 7-Zip「文件关联」页的清单对齐）。
@@ -49,18 +57,49 @@ enum FileAssociation {
         return NSWorkspace.shared.urlForApplication(toOpen: probe)
     }
 
+    /// 「归档实用工具」的固定位置（系统自带，两个路径按系统版本二选一）。
+    /// 「恢复系统默认」就是把它设回默认打开方式。
+    static var archiveUtilityURL: URL? {
+        [
+            "/System/Library/CoreServices/Applications/Archive Utility.app",
+            "/System/Library/CoreServices/Archive Utility.app",
+        ].first { FileManager.default.fileExists(atPath: $0) }.map(URL.init(fileURLWithPath:))
+    }
+
+    /// 用户在「+ 添加类型」里手动追加的格式。必须持久化：否则刷新后
+    /// status() 只遍历内置清单，刚添加的格式立刻从列表里消失，
+    /// 「添加类型」清单又会把它列出来，造成「加了却没生效」的假象。
+    static var extraExts: [String] {
+        get { UserDefaults.standard.stringArray(forKey: "associationExtraExts") ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: "associationExtraExts") }
+    }
+
     static func status() -> [Entry] {
         let ownPath = Bundle.main.bundleURL.standardizedFileURL.path
-        return supported.map { item in
-            let handler = currentHandler(ext: item.ext)
+        // 内置清单 + 用户手动追加的格式（追加的只需扩展名，查询靠探针文件）。
+        // 去重：UserDefaults 里可能混进与内置清单重复的项（手工改过、旧版本
+        // 写入），Table 的 Identifiable 以扩展名为 id，重复行会让选中态错乱。
+        let builtIns = supported.map { $0.ext }
+        let all = builtIns + extraExts.filter { !builtIns.contains($0) }
+        return all.map { ext in
+            let handler = currentHandler(ext: ext)
             // 必须比对完整路径：只看 app 名会把用户机器上任何同名副本
             // （下载目录里的另一份构建）误判为「已关联」，「移除」也会改错对象。
             let isOurs = handler?.standardizedFileURL.path == ownPath
-            return Entry(ext: item.ext,
+            return Entry(ext: ext,
                          handlerName: handler?.deletingPathExtension().lastPathComponent ?? "未设置",
                          isOurs: isOurs,
-                         handlerIcon: handler.map { NSWorkspace.shared.icon(forFile: $0.path) })
+                         handlerIcon: handler.map { NSWorkspace.shared.icon(forFile: $0.path) },
+                         handlerURL: handler)
         }
+    }
+
+    /// 把清单外的格式纳入列表（「+ 添加类型」）。幂等。
+    static func addExt(_ ext: String) {
+        let lower = ext.lowercased()
+        guard !supported.contains(where: { $0.ext == lower }),
+              !extraExts.contains(lower) else { return }
+        extraExts = extraExts + [lower]
     }
 
     /// 绑定为默认打开方式。macOS 12+ 系统会弹确认框，属于正常流程。
@@ -71,15 +110,11 @@ enum FileAssociation {
     /// 移除关联 = 恢复系统默认打开方式（归档实用工具）。
     /// macOS 没有“解绑为空”的 API，这是与 Windows 取消勾选等效的做法。
     static func remove(ext: String, completion: @escaping @MainActor (Bool) -> Void) {
-        let candidates = [
-            "/System/Library/CoreServices/Applications/Archive Utility.app",
-            "/System/Library/CoreServices/Archive Utility.app",
-        ]
-        guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+        guard let utility = archiveUtilityURL else {
             Task { @MainActor in completion(false) }
             return
         }
-        setDefault(URL(fileURLWithPath: path), ext: ext, completion: completion)
+        setDefault(utility, ext: ext, completion: completion)
     }
 
     /// 可供该格式打开的应用（macOS「打开方式」里的候选）。

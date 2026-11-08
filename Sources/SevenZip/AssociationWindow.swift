@@ -122,7 +122,10 @@ struct AssociationDialogView: View {
                 } label: {
                     Label("恢复系统默认", systemImage: "arrow.uturn.backward")
                 }
-                .disabled(entry.isOurs)
+                // 已是归档实用工具时「恢复」没有意义；恰好是七压时反而是
+                // 解绑的唯一入口，必须可用（最初误写成 isOurs 时禁用，
+                // 会导致绑定七压后永远没法解绑）。
+                .disabled(entry.isSystemDefault)
 
                 Divider()
 
@@ -172,6 +175,10 @@ struct AssociationDialogView: View {
                     ForEach(addable, id: \.self) { ext in
                         Button {
                             showAdd = false
+                            // 先纳入列表再绑定：即使系统确认框被取消，
+                            // 这个格式也已出现在主列表里（状态=未设置/原打开方式），
+                            // 不会「加了却看不到」。
+                            FileAssociation.addExt(ext)
                             FileAssociation.bind(ext: ext) { ok in
                                 message = ok ? "已把 .\(ext) 关联到七压。"
                                              : "系统拒绝了这次更改（.\(ext)）。"
