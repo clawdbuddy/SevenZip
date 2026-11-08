@@ -45,4 +45,5 @@ jobs:
           dist/SevenZip-macOS-arm64.zip
           dist/SevenZip-macOS-arm64.dmg
           --title "七压 SevenZip ${GITHUB_REF_NAME}"
+          --target "${GITHUB_SHA}"
           --generate-notes
