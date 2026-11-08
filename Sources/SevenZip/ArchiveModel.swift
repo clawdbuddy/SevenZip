@@ -33,11 +33,31 @@ final class ArchiveModel: ObservableObject {
     @Published private(set) var passwordNeededFor: URL?
     @Published var previewURL: URL?
 
-    private var runningPID: pid_t?
+    /// 运行中子进程的 pid（跨线程可见）。
+    ///
+    /// 后台线程在 waitpid 回收子进程后**立刻**清空它：若等到 MainActor 的
+    /// complete() 才清，这中间的整段主线程跳转里用户点「取消」都会把
+    /// SIGTERM 发给一个已被系统回收、可能已复用的 pid（主线程繁忙时这段
+    /// 窗口可达几十毫秒）。
+    private final class PidBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: pid_t?
+        var pid: pid_t? {
+            get { lock.lock(); defer { lock.unlock() }; return value }
+            set { lock.lock(); value = newValue; lock.unlock() }
+        }
+    }
+    private let runningPID = PidBox()
     private var pending: [Job] = []
     private var progressFragment = ""
     private var activeRunID: UUID?
     private var previewFolders: [URL] = []
+    /// 已在启动阶段失败的任务组：组内的后续依赖任务一律拒绝入队。
+    ///
+    /// 「移出归档」= 解压 → 删除 是依赖链。解压没跑成时删除绝不能执行，
+    /// 否则「移动」退化成「删除」= 数据丢失。仅从 pending 剔除不够：
+    /// 删除任务是在解压失败之后才入队的（见 PaneView.moveAction）。
+    private var abortedGroups: Set<UUID> = []
 
     /// 解压完成后的收尾信息：落地目录、旧编码文件名修复表、可选的根目录去重。
     private struct ExtractCompletion {
@@ -340,9 +360,9 @@ final class ArchiveModel: ObservableObject {
         pending.removeAll()
         queueCount = 0
         cancelRequested = true
-        // 已知风险：kill 与后台 waitpid 之间存在微秒级 pid 复用窗口，
-        // 理论上可能 SIGTERM 到复用该 pid 的无关进程（概率极低，暂不处理）。
-        if let pid = runningPID { kill(pid, SIGTERM) }
+        // pid 由后台线程在 waitpid 回收后立刻清空：这里拿到的是「还活着」的
+        // 子进程，不会误杀已被系统复用的 pid。
+        if let pid = runningPID.pid { kill(pid, SIGTERM) }
     }
 
     private func editableArchive() -> URL? {
@@ -373,11 +393,39 @@ final class ArchiveModel: ObservableObject {
         displayPaths.map { path in entries.first(where: { $0.path == path })?.enginePath ?? path }
     }
 
+    /// 「移出归档」的预检：目标目录已有同名文件时必须中止。
+    ///
+    /// 7zz 的 -aos（跳过同名）遇到已存在文件会「跳过、且仍以 0 退出」
+    /// （实测：输出 "Everything is Ok / Files: 0"，退出码 0）。移动链若只看
+    /// 退出码，后面的「从归档删除」就会照常执行 → 归档内容凭空消失，
+    /// 而目标位置留着旧文件。宁可中止也不能让用户以为移动成功了。
+    ///
+    /// 返回冲突的相对路径（无冲突返回 nil）。
+    func moveConflictCheck(paths: [String], to destination: URL) -> String? {
+        let display = expandedPaths(paths)
+        let engines = enginePaths(for: display)
+        for (index, rel) in display.enumerated() {
+            // 显示名与引擎名都要查：旧编码归档的落盘名先以引擎名出现，
+            // 解压完成后才被改名成显示名。
+            var candidates = [rel]
+            if index < engines.count { candidates.append(engines[index]) }
+            for candidate in candidates {
+                let url = destination.appendingPathComponent(candidate)
+                if FileManager.default.fileExists(atPath: url.path) { return candidate }
+            }
+        }
+        return nil
+    }
+
     /// Renames extracted files whose engine-visible names were recovered from
     /// legacy encodings, deepest paths first so children move before parents.
     private func restoreRecoveredNames(in directory: URL, map: [String: String]) {
         guard !map.isEmpty else { return }
         let sorted = map.sorted { $0.key.split(separator: "/").count > $1.key.split(separator: "/").count }
+        // 只记录「本次改名腾空」的目录：改名后源目录可能空了，需要清理；
+        // 但不能遍历整个目标目录去删空目录——那会把用户自己留着的空文件夹
+        // 也删掉（目标目录越大耗时越长）。
+        var emptied: [URL] = []
         for (engineRel, displayRel) in sorted {
             let source = directory.appendingPathComponent(engineRel)
             let target = directory.appendingPathComponent(displayRel)
@@ -386,15 +434,9 @@ final class ArchiveModel: ObservableObject {
             try? FileManager.default.createDirectory(at: target.deletingLastPathComponent(),
                                                      withIntermediateDirectories: true)
             try? FileManager.default.moveItem(at: source, to: target)
+            emptied.append(source.deletingLastPathComponent())
         }
-        // Best-effort cleanup of legacy-named directories left empty by the moves.
-        guard let iterator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isDirectoryKey],
-                                                    options: [.skipsHiddenFiles]) else { return }
-        var folders: [URL] = []
-        while let url = iterator.nextObject() as? URL {
-            if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { folders.append(url) }
-        }
-        for folder in folders.sorted(by: { $0.path.count > $1.path.count }) {
+        for folder in emptied.sorted(by: { $0.path.count > $1.path.count }) {
             if (try? FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty) == true {
                 try? FileManager.default.removeItem(at: folder)
             }
@@ -414,10 +456,25 @@ final class ArchiveModel: ObservableObject {
             try? fm.moveItem(at: root.appendingPathComponent(child),
                              to: directory.appendingPathComponent(child))
         }
-        try? fm.removeItem(at: root)
+        // 只有内容全部移上去才能删空壳：移动可能失败（权限、大小写不敏感的
+        // 重名冲突等），而 removeItem 是递归删除——留着没移走的内容会被一起删掉，
+        // 用户却看到「已解压到 …」。
+        if (try? fm.contentsOfDirectory(atPath: root.path).isEmpty) == true {
+            try? fm.removeItem(at: root)
+        }
     }
 
     private func enqueue(_ invocation: ArchiveInvocation, completion: Completion, group: UUID? = nil) {
+        // 依赖链的前序任务已失败：拒绝入队，否则「移动」会退化成「删除」。
+        // 「移出归档」= 解压 → 删除，解压没跑成时删除绝不能执行。
+        // 只从 pending 里剔除不够——删除任务是在解压失败之后才入队的，
+        // 那时 pending 里还没有它（见 PaneView.moveAction）。
+        if let group, abortedGroups.contains(group) {
+            report("前序操作已失败，本次操作已取消。")
+            // 一组最多只有一个「后继依赖任务」（删除），拒绝后该组即结束。
+            abortedGroups.remove(group)
+            return
+        }
         pending.append(Job(invocation: invocation, completion: completion, group: group))
         queueCount = pending.count
         if !busy { launchNext() }
@@ -432,13 +489,13 @@ final class ArchiveModel: ObservableObject {
 
             guard let resourceRoot = Bundle.main.resourceURL else {
                 report("应用资源目录不存在。")
-                dropGroupMembers(of: job)
+                abortGroup(of: job)
                 continue
             }
             let binary = resourceRoot.appendingPathComponent("bin/7zz")
             guard FileManager.default.isExecutableFile(atPath: binary.path) else {
                 report("找不到内置 7zz，请在 Mac 上运行 scripts/build-macos.sh。")
-                dropGroupMembers(of: job)
+                abortGroup(of: job)
                 continue
             }
 
@@ -453,7 +510,7 @@ final class ArchiveModel: ObservableObject {
                                                     environment: environment)
             } catch {
                 report("启动 7zz 失败：\(error.localizedDescription)")
-                dropGroupMembers(of: job)
+                abortGroup(of: job)
                 continue
             }
 
@@ -464,7 +521,8 @@ final class ArchiveModel: ObservableObject {
             activeRunID = runID
             status = "执行中：\(job.invocation.arguments.first ?? "")（队列 \(queueCount)）"
             output = "正在运行官方 7zz 引擎…"
-            runningPID = spawned.pid
+            runningPID.pid = spawned.pid
+            let pidBox = runningPID
 
             // Passwords travel over an anonymous stdin pipe, never argv, logs or env.
             // Sending a blank line makes encrypted archives fail instead of hanging.
@@ -486,6 +544,8 @@ final class ArchiveModel: ObservableObject {
                     Task { @MainActor [weak self] in self?.consumeProgress(fragment, runID: runID) }
                 }
                 let code = spawned.waitForExit()
+                // 子进程已被回收：立刻清空 pid，避免主线程跳转期间误杀复用 pid。
+                pidBox.pid = nil
                 let text = String(decoding: captured, as: UTF8.self)
                 Task { @MainActor [weak self] in
                     self?.complete(job, code: code, text: text, truncated: truncated, runID: runID)
@@ -495,8 +555,18 @@ final class ArchiveModel: ObservableObject {
         }
     }
 
-    /// 启动/运行失败时级联取消同组后续任务：
+    /// 启动失败时级联取消同组后续任务：
     /// 「移出归档」的解压没跑成，删除绝不能执行（移动退化为删除 = 数据丢失）。
+    ///
+    /// 与运行期失败（complete 里调用）不同：启动失败时依赖任务可能还没入队，
+    /// 所以要额外把组记进 abortedGroups，由 enqueue 拒绝后续入队。
+    private func abortGroup(of job: Job) {
+        guard let group = job.group else { return }
+        abortedGroups.insert(group)
+        dropGroupMembers(of: job)
+    }
+
+    /// 运行期失败时级联取消同组后续任务（此时依赖任务已在 pending 里）。
     private func dropGroupMembers(of job: Job) {
         guard let group = job.group else { return }
         pending.removeAll { $0.group == group }
@@ -517,7 +587,6 @@ final class ArchiveModel: ObservableObject {
         guard activeRunID == runID else { return }
         activeRunID = nil
         busy = false
-        runningPID = nil
         progress = nil
         // 用户主动取消：进程被 SIGTERM（退出码 143），按取消收尾而非报错；
         // 且不做密码错误探测（取消的残缺输出可能恰好含 "password"）。
@@ -627,6 +696,9 @@ final class ArchiveModel: ObservableObject {
                 report("批量任务中止：\(archive.lastPathComponent) 包含不安全路径。")
                 // 按组清除本批剩余任务；无组任务（单归档 extractArchive）无需清除。
                 dropGroupMembers(of: job)
+                // 必须继续排空队列：否则 pending 里剩下的任务永远不跑
+                // （队列显示空闲但一直卡着），后续入队的任何任务都会被堵住。
+                launchNext()
                 return
             }
             do {

@@ -18,11 +18,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppMenuBuilder.shared.install()
         }
         // 主窗口按需创建（AppActions.requestMainScene → MainWindowController）。
-        // Dock 启动没有任何 URL 事件，0.5s 后兜底开主窗口；命令 URL 冷启动由
+        // Dock 启动没有任何 URL 事件，稍后兜底开主窗口；命令 URL 冷启动由
         // 路由决定要不要主窗口，「添加到压缩包」类对话框命令则永远不开。
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             if !self.receivedURLOpen {
-                Task { @MainActor in AppActions.shared.requestMainScene() }
+                // 兜底开的主窗口先算「临时」：URL 事件的投递时延不可控
+                // （实测可达数秒），固定等待必然先开窗，随后到达的命令
+                // URL 又走「主窗口已开」分支，破坏「右键只有『用七压打开』
+                // 才开主窗口」的规则。命令 URL 到达时把临时窗口关掉。
+                Task { @MainActor in AppActions.shared.requestProvisionalMainScene() }
             }
         }
         // 启动后延迟静默检查更新（可在 帮助 → 启动时检查更新 关闭）。
@@ -38,26 +42,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 遍历 Contents/PlugIns 下的 appex，pluginkit 查不到的重新注册。
+    /// 遍历 Contents/PlugIns 下的 appex：
+    /// - 当前这份路径没在册的，补注册（pluginkit -a，幂等）；
+    /// - 已登记但用户没勾选（pluginkit 输出没有 '+' 标记）的，提示用户去哪里开启。
+    ///
+    /// 只按标识符判断「是否已注册」是不够的：系统里可能还留着旧副本
+    /// （换了 bundle id 或换过 app 位置），那会让当前这份永远不被登记，
+    /// 而 Finder 右键菜单照样不出现——正是历史上遇到的问题。
     private nonisolated static func reregisterMissingExtensions() {
         let plugIns = Bundle.main.builtInPlugInsURL
         guard let appexes = try? FileManager.default.contentsOfDirectory(
             at: plugIns ?? URL(fileURLWithPath: "/"), includingPropertiesForKeys: nil
         ).filter({ $0.pathExtension == "appex" }) else { return }
         let pluginkit = URL(fileURLWithPath: "/usr/bin/pluginkit")
+
+        // 一次性拿到全部登记信息（按路径判断当前这份在不在册）。
+        var registry: [String: String] = [:]   // appex 绝对路径 → 用户选举标记
+        if let query = try? SpawnedProcess.launch(
+            executable: pluginkit, arguments: ["-mAv"], directory: nil, environment: [:]) {
+            let text = String(decoding: query.stdoutRead.readDataToEndOfFile(), as: UTF8.self)
+            _ = query.waitForExit()
+            for line in text.split(separator: "\n") {
+                // 格式：<标记><tab>id(version)<tab>uuid<tab>日期<tab>路径
+                let fields = line.split(separator: "\t", maxSplits: 4, omittingEmptySubsequences: false)
+                guard fields.count == 5 else { continue }
+                let path = String(fields[4])
+                guard path.hasSuffix(".appex") else { continue }
+                registry[path] = String(line.prefix(while: { $0 == "+" || $0 == "-" || $0 == "!" || $0 == "=" || $0 == "?" }))
+            }
+        }
+
+        var notElected: [String] = []
         for appex in appexes {
             guard let id = Bundle(url: appex)?.bundleIdentifier else { continue }
-            guard let check = try? SpawnedProcess.launch(
-                executable: pluginkit, arguments: ["-mAD", "-i", id],
-                directory: nil, environment: [:]) else { continue }
-            let found = String(decoding: check.stdoutRead.readDataToEndOfFile(), as: UTF8.self)
-            _ = check.waitForExit()
-            guard found.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            if let add = try? SpawnedProcess.launch(
-                executable: pluginkit, arguments: ["-a", appex.path],
-                directory: nil, environment: [:]) {
-                _ = add.waitForExit()
+            let path = appex.path
+            if registry[path] == nil {
+                // 当前这份没在册（换了 bundle id / 换了 app 位置时最常见）。
+                if let add = try? SpawnedProcess.launch(
+                    executable: pluginkit, arguments: ["-a", path],
+                    directory: nil, environment: [:]) {
+                    _ = add.waitForExit()
+                }
+                continue
             }
+            // 已登记：标记 '+' 表示用户勾选了使用；没有标记 = 未被启用。
+            if registry[path] != "+" {
+                notElected.append(id)
+            }
+        }
+
+        if !notElected.isEmpty {
+            Task { @MainActor in
+                Self.notifyExtensionsDisabled(notElected)
+            }
+        }
+    }
+
+    /// 提示用户去系统设置里勾选扩展。
+    ///
+    /// pluginkit -a 只能「登记」扩展，改不了用户的选举（-e use 会强行覆盖
+    /// 用户的选择，不该由程序替用户做），所以只能告知去哪里开。
+    @MainActor
+    private static func notifyExtensionsDisabled(_ identifiers: [String]) {
+        let defaults = UserDefaults.standard
+        let key = "extensionsDisabledNoticeShown"
+        guard !defaults.bool(forKey: key) else { return }
+        defaults.set(true, forKey: key)
+        let names = identifiers
+            .map { id -> String in
+                if id.contains("findersync") { return "Finder 右键菜单" }
+                if id.contains("quicklook") { return "快速查看预览" }
+                if id.contains("qa") { return "快速操作" }
+                return id
+            }
+        .joined(separator: "、")
+        let alert = NSAlert()
+        alert.messageText = "部分系统扩展尚未启用"
+        alert.informativeText = """
+        \(names) 需要在「系统设置 → 通用 → 登录项与扩展 → 扩展」里勾选启用，\
+        否则右键菜单与快速查看不会出现。
+
+        （程序只能替扩展登记，无法代替你在系统设置里做选择。）
+        """
+        alert.addButton(withTitle: "打开系统设置")
+        alert.addButton(withTitle: "稍后再说")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")!)
         }
     }
 
@@ -74,6 +144,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         receivedURLOpen = true
         NSApp.activate(ignoringOtherApps: true)
         Task { @MainActor in
+            // 只有命令 URL（没有「用七压打开」）时，兜底开出的临时主窗口
+            // 就不该留下——产品规则是「右键只有『用七压打开』才开主窗口」。
+            if fileURLs.isEmpty {
+                MainWindowController.shared.closeIfProvisional()
+            }
             if !fileURLs.isEmpty { AppActions.shared.routeOpenFiles(fileURLs) }
             for url in commandURLs {
                 AppActions.shared.routeCommandURL(url)

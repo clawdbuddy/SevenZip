@@ -177,6 +177,9 @@ final class AppActions: ObservableObject {
     /// 主窗口由 MainWindowController 手动管理，不用 WindowGroup 场景（场景
     /// 自动开出的窗口事后无法清除，见 MainWindowController 注释）。
     func requestMainScene() { MainWindowController.shared.show() }
+    /// 兜底开窗（Dock 启动、还没等到 URL 事件）：窗口先算「临时」，
+    /// 若随后到达的是命令 URL 就把它关掉。
+    func requestProvisionalMainScene() { MainWindowController.shared.showProvisional() }
     var openFiles: ([URL]) -> Void = { _ in }
     var extractInPlace: ([URL]) -> Void = { _ in }
     var extractToNamedFolder: ([URL]) -> Void = { _ in }

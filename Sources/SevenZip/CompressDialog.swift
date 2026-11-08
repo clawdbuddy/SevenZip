@@ -1,5 +1,6 @@
 import AppKit
 import ArchiveCore
+import Combine
 import SwiftUI
 
 /// 「添加到压缩包」双栏表单：主窗口内 sheet 与 Finder 右键独立对话框共用，
@@ -192,6 +193,57 @@ struct CompressFormView: View {
     }
 }
 
+/// 覆盖已有归档时的原文件暂存。
+///
+/// 不能「先删旧文件再建新文件」：压缩可能失败（磁盘满、源文件不可读、
+/// 参数非法），那样原归档就永久丢失了。改为把旧文件移到同目录的备份名，
+/// 压缩成功后删除备份，失败或取消则还原原文件。
+@MainActor
+final class OverwriteBackup {
+    private(set) var original: URL?
+    private(set) var backup: URL?
+
+    /// 已有文件则移到备份名；成功返回 true。失败返回 false（调用方应中止）。
+    func take(_ url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return true }
+        let backupURL = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).七压备份")
+        do {
+            if FileManager.default.fileExists(atPath: backupURL.path) {
+                try FileManager.default.removeItem(at: backupURL)
+            }
+            try FileManager.default.moveItem(at: url, to: backupURL)
+        } catch {
+            NSLog("[七压] 备份已有归档失败：\(error.localizedDescription)")
+            return false
+        }
+        original = url
+        backup = backupURL
+        return true
+    }
+
+    /// 压缩成功：原文件已被新归档取代，删掉备份。
+    func discard() {
+        guard let backup else { return }
+        try? FileManager.default.removeItem(at: backup)
+        original = nil
+        self.backup = nil
+    }
+
+    /// 压缩失败/取消/中途关窗：还原原文件。
+    ///
+    /// 7zz 失败时可能已在目标路径留下半截文件，必须先删掉再还原备份。
+    func restore() {
+        guard let original, let backup else { return }
+        if FileManager.default.fileExists(atPath: original.path) {
+            try? FileManager.default.removeItem(at: original)
+        }
+        try? FileManager.default.moveItem(at: backup, to: original)
+        self.original = nil
+        self.backup = nil
+    }
+}
+
 /// 目标路径解析与覆盖确认的共用逻辑。
 enum CompressDestination {
     /// 扩展名与所选格式保持一致（用户手改路径时兜底）。
@@ -205,7 +257,7 @@ enum CompressDestination {
         return url
     }
 
-    /// ArchiveModel 出于安全拒绝覆盖已有文件；用户确认后由调用方先移除再创建。
+    /// ArchiveModel 出于安全拒绝覆盖已有文件；用户确认后由调用方先备份再创建。
     static func confirmOverwrite(_ url: URL) -> Bool {
         let alert = NSAlert()
         alert.messageText = "替换已存在的归档？"
@@ -241,6 +293,8 @@ struct StandaloneCompressView: View {
     let email: Bool
     /// 由 CompressDialogController 注入（控制器需要查询忙闲）。
     @ObservedObject var model: ArchiveModel
+    /// 覆盖已有归档时的原文件暂存（由控制器注入，视图与控制器共用一份）。
+    let backup: OverwriteBackup
     var onClose: () -> Void
 
     @State private var options = CompressionOptions()
@@ -304,9 +358,16 @@ struct StandaloneCompressView: View {
         .onChange(of: model.busy) { busy in
             // 队列排空：成功（状态"已创建 …"）→ 短暂停留让用户看到结果后自动关窗；
             // 失败/取消/警告（errorMessage 非空，如未配置邮件）则停留展示。
-            if submitted, !busy, model.errorMessage == nil,
-               model.status.hasPrefix("已创建") {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { onClose() }
+            guard submitted, !busy else { return }
+            if model.status.hasPrefix("已创建") {
+                // 成功：原归档已被新归档取代，备份可以删了。
+                backup.discard()
+                if model.errorMessage == nil {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { onClose() }
+                }
+            } else {
+                // 失败/取消：还原原归档（压缩可能已在目标路径留下半截文件）。
+                backup.restore()
             }
         }
     }
@@ -327,11 +388,19 @@ struct StandaloneCompressView: View {
         }
         if FileManager.default.fileExists(atPath: url.path) {
             guard CompressDestination.confirmOverwrite(url) else { return }
-            try? FileManager.default.removeItem(at: url)
+            // 不直接删旧归档：压缩可能失败（磁盘满、源文件不可读、参数非法），
+            // 那样原归档就永久没了。改为移到备份名，成功后再删，失败则还原。
+            guard backup.take(url) else {
+                model.warn("无法备份已存在的压缩包，已取消操作。")
+                return
+            }
         }
         submitted = true
         model.compress(sources: sources, destination: url, options: options,
                        emailAfter: email, openAfter: false)
+        // compress 可能在建命令时就同步失败（此时 busy 从未变 true）：
+        // 没有任务在跑 → 立即还原备份。
+        if !model.busy { backup.restore() }
     }
 }
 
@@ -343,16 +412,27 @@ final class CompressDialogController: NSObject, NSWindowDelegate {
     private(set) var window: NSWindow?
     /// 由控制器创建并注入视图，便于在 show() 时查询忙闲。
     private var model: ArchiveModel?
+    /// 覆盖已有归档时的原文件暂存（视图与控制器共用一份）。
+    private var backup = OverwriteBackup()
+    /// 压缩进行中时到来的新请求：不能丢弃（用户会以为文件没被识别），
+    /// 暂存到队列，当前任务结束后再弹。
+    private var pendingRequest: (sources: [URL], email: Bool)?
+    /// 监听引擎忙闲：任务结束后弹出排队中的新请求。
+    private var busyObserver: AnyCancellable?
 
     func show(sources: [URL], email: Bool) {
         // 压缩进行中不销毁旧窗口（否则 7zz 成孤儿、进度归零）：
         // 把进行中的对话框带到前面，用户可等待或取消后重试。
-        if model?.busy == true, let window {
-            NSApp.activate(ignoringOtherApps: true)
-            window.makeKeyAndOrderFront(nil)
+        if model?.busy == true {
+            pendingRequest = (sources, email)
+            if let window {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+            }
             return
         }
         window?.close()
+        backup = OverwriteBackup()
         let model = ArchiveModel()
         self.model = model
         let window = NSWindow(
@@ -361,26 +441,44 @@ final class CompressDialogController: NSObject, NSWindowDelegate {
             backing: .buffered, defer: false)
         // onClose 必须绑定本窗口实例：成功后 1.2s 的自动关窗定时器触发时，
         // 用户可能已打开新对话框，经单例间接寻址会把新窗口误关。
-        let view = StandaloneCompressView(sources: sources, email: email, model: model) { [weak self, weak window] in
+        let view = StandaloneCompressView(sources: sources, email: email, model: model,
+                                          backup: backup, onClose: { [weak self, weak window] in
             guard let self, let window, self.window === window else { return }
             self.window = nil
             self.model = nil
             window.close()
-        }
+        })
         window.title = email ? "压缩并邮件" : "添加到压缩包"
         window.contentView = NSHostingView(rootView: view)
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
         self.window = window
+        // 引擎忙闲：任务结束后把排队中的新请求弹出来（压缩进行中时
+        // 右键另一批文件不能被丢弃）。
+        var wasBusy = false
+        busyObserver = model.$busy.sink { [weak self] busy in
+            guard let self else { return }
+            if busy { wasBusy = true; return }
+            guard wasBusy else { return }
+            wasBusy = false
+            guard let pending = self.pendingRequest else { return }
+            self.pendingRequest = nil
+            self.show(sources: pending.sources, email: pending.email)
+        }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
 
     /// 任务进行中点红钮关窗 = 取消：否则 7zz 成孤儿继续写盘，
     /// 用户却以为压缩已停止（与 StandaloneOperation 同款处理）。
+    ///
+    /// 取消必须**同步**执行：本回调虽在主线程，但若把 cancel 排进 Task，
+    /// windowWillClose 会先同步把 model 置空，Task 执行时 model 已是 nil，
+    /// 取消就丢了 —— 7zz 继续跑，勾了「压缩成功后删除源文件」时还会删掉
+    /// 用户以为已经取消的源文件。
     nonisolated func windowShouldClose(_ sender: NSWindow) -> Bool {
-        Task { @MainActor in self.model?.cancel() }
+        MainActor.assumeIsolated { self.model?.cancel() }
         return true
     }
 
@@ -389,8 +487,16 @@ final class CompressDialogController: NSObject, NSWindowDelegate {
     /// 异步置空会把刚建好的新窗口误清。
     nonisolated func windowWillClose(_ notification: Notification) {
         MainActor.assumeIsolated {
+            // 收尾覆盖前的原归档：成功则删备份，失败/取消则还原。
+            // 判据用 model 的最终状态——成功通知可能还没送到视图，
+            // 此时若按「有备份就还原」处理，会用旧归档盖掉刚生成的新归档。
+            if let model = self.model {
+                if model.status.hasPrefix("已创建") { self.backup.discard() }
+                else { self.backup.restore() }
+            }
             self.window = nil
             self.model = nil
+            self.busyObserver = nil
         }
     }
 }

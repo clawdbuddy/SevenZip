@@ -334,6 +334,8 @@ struct PaneView: View {
         .onChange(of: model.archiveURL) { _ in
             innerFolder = ""
             selected.removeAll()
+            // 窗口里有了归档 → 不再是「兜底开的临时窗口」。
+            MainWindowController.shared.markAsPermanent()
             syncToolState()
         }
         .onChange(of: model.nestedArchiveURL) { nested in
@@ -1107,6 +1109,12 @@ struct PaneView: View {
             guard canEditArchive else { return }
             let targets = expandedArchiveSelection
             guard !targets.isEmpty, let destination = chooseFolderPanel(title: "从归档移出到…") else { return }
+            // 预检：目标已有同名文件时 7zz 会「跳过并仍以 0 退出」，
+            // 移动链的后续删除就会执行 → 归档内容凭空消失。直接中止。
+            if let conflict = model.moveConflictCheck(paths: targets, to: destination) {
+                model.warn("目标位置已存在「\(conflict)」，移动已取消（避免覆盖或丢失归档内容）。")
+                return
+            }
             // 依赖组：解压失败时删除必须取消（否则「移动」在失败路径退化成「删除」）。
             // extract 前置校验不过会拒绝入队并返回 false——此时绝不能调 delete。
             let group = UUID()
@@ -1471,6 +1479,12 @@ struct PaneView: View {
                 // 否则静默退化成复制（用户以为源已删除）。
                 if move, !canEditArchive {
                     model.warn("当前归档为只读，无法移动；请使用复制。")
+                    return
+                }
+                // 预检：目标已有同名文件时 7zz 会「跳过并仍以 0 退出」，
+                // 移动链的后续删除就会执行 → 归档内容凭空消失。直接中止。
+                if move, let conflicting = model.moveConflictCheck(paths: targets, to: destination) {
+                    model.warn("目标位置已存在「\(conflicting)」，移动已取消（避免覆盖或丢失归档内容）。")
                     return
                 }
                 // 依赖组：解压失败时删除必须取消（移动退化成删除的数据丢失路径）。

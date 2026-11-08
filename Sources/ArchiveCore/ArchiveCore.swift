@@ -327,7 +327,11 @@ public enum ArchiveCommands {
             if options.format == .zip { args += ["-mem=\(options.zipEncryption)"] }
         }
         // 高级自由参数：透传为开关，必须位于归档路径之前。
-        args += options.extraParams.split(separator: " ").map(String.init)
+        // 过滤掉 "--"：它会让 7zz 停止解析开关，后面的归档路径被当成
+        // 「要压缩的文件」，结果在别处生成一个莫名的归档。
+        args += options.extraParams.split(separator: " ")
+            .map(String.init)
+            .filter { $0 != "--" }
         args.append(archive.path)
         args.append("--")
         args += sources.map { source -> String in

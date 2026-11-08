@@ -63,6 +63,29 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         window?.title = title
     }
 
+    /// 兜底开的主窗口（还没等到 URL 事件）标记为「临时」：
+    /// 若随后到达的是命令 URL（sevenzip://），说明这个窗口不该存在
+    /// ——产品规则是「右键只有『用七压打开』才开主窗口」。
+    private(set) var isProvisional = false
+
+    /// 兜底开窗：标记为临时，等确认没有 URL 事件后再「转正」。
+    func showProvisional() {
+        isProvisional = true
+        show()
+    }
+
+    /// 窗口里打开了归档 → 不再是临时窗口。
+    func markAsPermanent() {
+        isProvisional = false
+    }
+
+    /// 临时窗口且没有任何内容 → 关掉（命令 URL 到达时的清理）。
+    func closeIfProvisional() {
+        guard isProvisional else { return }
+        isProvisional = false
+        window?.close()
+    }
+
     nonisolated func windowWillClose(_ notification: Notification) {
         // windowWillClose 本就在主线程，故同步清理（参照 AppMenu.menuNeedsUpdate）。
         // 异步化会留下死路由缝：close 与清理之间到达的 URL 事件看到

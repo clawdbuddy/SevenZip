@@ -80,6 +80,28 @@ final class Controller: NSViewController {
                 }
             }
         }
-        group.notify(queue: .main) { completion(urls) }
+        // 兜底：某个提供方永不回调时（iCloud 占位文件、网络卷、已删除条目），
+        // group.notify 不会触发，Finder 的快速操作一直转圈。
+        // 到点用已取到的 urls 继续。
+        var delivered = false
+        let deliver: ([URL]) -> Void = { result in
+            lock.lock()
+            let already = delivered
+            delivered = true
+            lock.unlock()
+            if !already { completion(result) }
+        }
+        group.notify(queue: .main) {
+            lock.lock()
+            let snapshot = urls
+            lock.unlock()
+            deliver(snapshot)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+            lock.lock()
+            let snapshot = urls
+            lock.unlock()
+            deliver(snapshot)
+        }
     }
 }

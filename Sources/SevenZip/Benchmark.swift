@@ -68,7 +68,21 @@ final class BenchmarkRunner: ObservableObject {
         // 显式停止/关窗（onDisappear 也走这里）即放弃「重新启动」意图：
         // 否则 finish() 回主线程看到 restartPending 会在无 UI 下后台重跑 7zz。
         restartPending = false
-        if let pid { kill(pid, SIGTERM) }
+        guard let pid else { return }
+        kill(pid, SIGTERM)
+        // 二级看门狗：7zz 卡在磁盘/网络 I/O 时 SIGTERM 可能收不到 EOF，
+        // 读循环不结束 → finish() 永不执行 → 界面永远停在「运行中」，
+        // 用户无法退出该状态。0.5s 后升级 SIGKILL。
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) {
+            Task { @MainActor [weak self] in
+                guard let self, self.pid == pid, self.running else { return }
+                kill(pid, SIGKILL)
+                // 强制结束：不能让界面继续显示「运行中」。
+                self.running = false
+                self.pid = nil
+                self.finish(code: -1, text: self.output)
+            }
+        }
     }
 
     /// 停止当前运行并在其结束后自动重启（供「重新启动」按钮）。

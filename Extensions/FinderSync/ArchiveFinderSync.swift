@@ -22,7 +22,10 @@ final class ArchiveFinderSync: FIFinderSync {
         guard menuKind == .contextualMenuForItems || menuKind == .contextualMenuForContainer else {
             return menu
         }
-        let urls = targetURLs()
+        // 菜单构建时就把目标集合定下来，动作直接用它——否则动作再解析一次
+        // 可能拿到与菜单显示不一致的对象。
+        let urls = targetURLs(for: menuKind)
+        resolvedURLs = urls
         let archives = urls.filter { Self.archiveExtensions.contains($0.pathExtension.lowercased()) }
         let base = Self.baseName(for: urls)
 
@@ -50,16 +53,24 @@ final class ArchiveFinderSync: FIFinderSync {
         menu.addItem(item)
     }
 
-    /// 当前操作的文件集：优先选中项，其次右键点击的容器本身。
-    private func targetURLs() -> [URL] {
-        if let selected = FIFinderSyncController.default().selectedItemURLs(), !selected.isEmpty {
-            return selected
+    /// 当前操作的文件集：
+    /// - 项目右键（.contextualMenuForItems）：用选中项，没选中才用右键对象；
+    /// - 空白处右键（.contextualMenuForContainer）：必须用右键的那个目录。
+    ///   否则用户选中了一个 zip、又在另一个目录空白处右键，菜单会作用在
+    ///   那个 zip 上——与用户意图完全不符。
+    private func targetURLs(for menuKind: FIMenuKind) -> [URL] {
+        let controller = FIFinderSyncController.default()
+        if menuKind == .contextualMenuForContainer {
+            if let container = controller.targetedURL() { return [container] }
+            return []
         }
-        if let container = FIFinderSyncController.default().targetedURL() {
-            return [container]
-        }
+        if let selected = controller.selectedItemURLs(), !selected.isEmpty { return selected }
+        if let targeted = controller.targetedURL() { return [targeted] }
         return []
     }
+
+    /// 菜单构建时解析出的目标集合（动作直接用它）。
+    private var resolvedURLs: [URL] = []
 
     /// 基础名：单选取文件名（剥离 .tar.gz 等复合扩展名），多选统一为 Archive。
     private static func baseName(for urls: [URL]) -> String {
@@ -83,7 +94,7 @@ final class ArchiveFinderSync: FIFinderSync {
     // MARK: - 菜单动作
 
     @objc private func openSelected() {
-        let urls = targetURLs()
+        let urls = resolvedURLs
         guard !urls.isEmpty else { return }
         NSWorkspace.shared.open(urls, withApplicationAt: parentAppURL(),
                                 configuration: NSWorkspace.OpenConfiguration()) { _, _ in }
@@ -98,7 +109,7 @@ final class ArchiveFinderSync: FIFinderSync {
 
     /// sevenzip://<action>?path=…&path=… 回传主程序；主程序 Info.plist 声明了该 scheme。
     private func sendCommand(host: String, extra: [URLQueryItem] = []) {
-        let urls = targetURLs()
+        let urls = resolvedURLs
         guard !urls.isEmpty else { return }
         var components = URLComponents()
         components.scheme = "sevenzip"

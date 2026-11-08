@@ -13,6 +13,10 @@ final class Provider: NSViewController, QLPreviewingController {
     /// 预览生成上限：超过 2 秒或 10000 条则截断并提示（参考项目同款策略）。
     private static let timeLimit: TimeInterval = 2
     private static let entryLimit = 10_000
+    /// 硬超时：后台读线程可能被不可中断 I/O（SMB/NFS 卡死）永久阻塞，
+    /// 两级看门狗（SIGTERM→SIGKILL）对它无效 → completion handler 永不
+    /// 调用 → Quick Look 一直转圈。到点无条件完成，宁可空预览也不挂起。
+    private static let hardTimeout: TimeInterval = 8
 
     private let outline = NSOutlineView()
     private let summaryLabel = NSTextField(labelWithString: "")
@@ -97,12 +101,17 @@ final class Provider: NSViewController, QLPreviewingController {
         outline.reloadData()
         requestID += 1
         let id = requestID
+        // 完成回调的一次性闸门：保证 handler 恰好被调用一次
+        // （后台线程可能永不返回，硬超时是唯一兜底）。
+        let gate = CompletionGate()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Self.listArchive(url)
             DispatchQueue.main.async { [weak self] in
                 // 过期请求（用户已切换到另一个文件）：完成回调但不得更新界面。
                 // self 已释放时也必须调 handler，否则 Quick Look 挂起。
-                guard let self, self.requestID == id else { handler(nil); return }
+                guard let self, self.requestID == id else { gate.fire(handler); return }
+                // 硬超时已经触发：Quick Look 已经收尾，不再更新界面。
+                guard !gate.hasFired else { return }
                 self.summaryLabel.stringValue = result.summary
                 self.noteLabel.stringValue = result.note
                 self.rootNodes = result.nodes
@@ -111,8 +120,31 @@ final class Provider: NSViewController, QLPreviewingController {
                 for node in self.rootNodes where !node.children.isEmpty {
                     self.outline.expandItem(node)
                 }
-                handler(nil)   // 即使失败也返回成功，避免 Quick Look 显示系统错误页
+                gate.fire(handler)   // 即使失败也返回成功，避免 Quick Look 显示系统错误页
             }
+        }
+        // 硬超时兜底：后台线程被不可中断 I/O 卡死时，本回调是唯一的出口。
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.hardTimeout) {
+            gate.fire(handler)
+        }
+    }
+
+    /// 完成回调的一次性闸门（线程安全）。
+    private final class CompletionGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var fired = false
+        var hasFired: Bool {
+            lock.lock(); defer { lock.unlock() }; return fired
+        }
+        /// 返回 true 表示本次调用赢得了闸门（此前未触发）。
+        @discardableResult
+        func fire(_ handler: @escaping (Error?) -> Void) -> Bool {
+            lock.lock()
+            let won = !fired
+            fired = true
+            lock.unlock()
+            if won { handler(nil) }
+            return won
         }
     }
 
@@ -182,10 +214,15 @@ final class Provider: NSViewController, QLPreviewingController {
             }
         }
         var captured = Data()
+        // 字节上限：条目极多的归档（几十万~百万条）会让清单文本达到几百 MB，
+        // 扩展进程被 jetsam 掉——崩的是 Quick Look 宿主，用户侧非常显眼。
+        let maximumBytes = 16 * 1024 * 1024
         while true {
             let chunk = spawned.stdoutRead.availableData
             if chunk.isEmpty { break }
-            captured.append(chunk)
+            let remaining = max(0, maximumBytes - captured.count)
+            if remaining == 0 { break }
+            captured.append(contentsOf: chunk.prefix(remaining))
         }
         // EOF 意味着进程已关闭 stdout（基本退出完成），此时先置"无需再杀"标记，
         // 避免"进程已正常退出但 waitpid 尚未返回"的窗口期被看门狗误标超时。
