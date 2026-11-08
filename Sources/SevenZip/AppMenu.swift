@@ -31,14 +31,6 @@ final class AppMenuBuilder: NSObject {
 
     // MARK: - 各菜单
 
-    /// 顶层菜单的图标（菜单栏里显示在菜单名左侧）。
-    ///
-    /// macOS 允许 NSMenuItem 带 image 并在菜单栏里渲染出来，图标与菜单名
-    /// 一一对应，用户能一眼看出每个菜单管什么。
-    private func topLevelIcon(_ symbol: String) -> NSImage? {
-        NSMenu.symbolImage(symbol)
-    }
-
     private func makeAppMenu() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "七压")
@@ -54,12 +46,6 @@ final class AppMenuBuilder: NSObject {
         menu.addItem(.separator())
         let quit = menu.addItem(withTitle: "退出七压", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.image = NSMenu.symbolImage("power")
-        // 应用菜单的图标用 app 图标；菜单安装得早时图标可能还没就绪，
-        // 兜底用一个符号，保证菜单栏里一定有图标。
-        item.image = NSApp.applicationIconImage ?? NSMenu.symbolImage("archivebox")
-        // 应用菜单的标题由系统按 app 名合成；一旦设了 image 就不再合成，
-        // 必须显式给标题，否则菜单栏里只剩一个图标、没有「七压」两个字。
-        item.title = "七压"
         item.submenu = menu
         return item
     }
@@ -71,7 +57,6 @@ final class AppMenuBuilder: NSObject {
         menu.addItem(title: "创建压缩包…", key: "n", tag: "createArchive", symbol: "archivebox")
         menu.addItem(.separator())
         menu.addItem(title: "关闭压缩包", key: "w", tag: "closeArchive", symbol: "xmark")
-        item.image = topLevelIcon("folder")
         item.submenu = menu
         return item
     }
@@ -109,7 +94,6 @@ final class AppMenuBuilder: NSObject {
         rename.keyEquivalentModifierMask = [.command]
         let delete = menu.addItem(title: "删除…", key: "\u{7f}", tag: "deleteSelection", symbol: "trash")
         delete.keyEquivalentModifierMask = [.command]
-        item.image = topLevelIcon("pencil")
         item.submenu = menu
         return item
     }
@@ -154,7 +138,6 @@ final class AppMenuBuilder: NSObject {
         menu.delegate = self
         viewMenu.delegate = self
         appearanceMenu.delegate = self
-        item.image = topLevelIcon("eye")
         item.submenu = menu
         return item
     }
@@ -179,7 +162,6 @@ final class AppMenuBuilder: NSObject {
         menu.addItem(title: "性能测试（Benchmark）…", key: "", tag: "benchmark", symbol: "gauge.with.dots.needle.67percent")
         menu.addItem(.separator())
         menu.addItem(title: "文件类型关联…", key: "", tag: "fileAssociation", symbol: "folder.badge.gearshape")
-        item.image = topLevelIcon("wrench.and.screwdriver")
         item.submenu = menu
         return item
     }
@@ -196,7 +178,6 @@ final class AppMenuBuilder: NSObject {
         mini.image = NSMenu.symbolImage("minus")
         let zoom = menu.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         zoom.image = NSMenu.symbolImage("arrow.up.left.and.arrow.down.right")
-        item.image = topLevelIcon("macwindow")
         item.submenu = menu
         NSApp.windowsMenu = menu   // 系统自动追加窗口列表与「全部移到前面」
         return item
@@ -212,7 +193,6 @@ final class AppMenuBuilder: NSObject {
         menu.addItem(.separator())
         menu.addItem(title: "关于七压", key: "", tag: "about", symbol: "questionmark.circle")
         menu.delegate = self
-        item.image = topLevelIcon("questionmark.circle")
         item.submenu = menu
         return item
     }

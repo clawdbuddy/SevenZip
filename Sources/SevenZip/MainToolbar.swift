@@ -104,7 +104,10 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
     func makeToolbar() -> NSToolbar {
         let toolbar = NSToolbar(identifier: "SevenZip.MainToolbar")
         toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
+        // 图标 + 文字：只给图标的话，用户必须悬停才知道每个按钮干什么。
+        // .iconAndLabel 是 macOS 工具栏显示文字的正规方式（文字在图标下方，
+        // 系统会自动把统一工具栏的标题栏加高）。
+        toolbar.displayMode = .iconAndLabel
         // 不开放自定义与布局持久化：工具项是核心操作入口，固定排列更可预期
         // （也避免用户误删后无法恢复）。
         toolbar.allowsUserCustomization = false
