@@ -27,7 +27,8 @@ final class AppActions: ObservableObject {
     var checksum: (String) -> Void = { _ in }
     var toggleLog: () -> Void = {}
     var enterPassword: () -> Void = {}
-    var fileAssociation: () -> Void = {}
+    /// 文件类型关联：独立窗口（不依赖主窗口，Finder 右键也能打开）。
+    var fileAssociation: () -> Void = { AssociationWindowController.shared.show() }
     var about: () -> Void = {}
 
     // 双窗格（阶段2）：外壳安装开关，焦点窗格安装跨窗格传输。

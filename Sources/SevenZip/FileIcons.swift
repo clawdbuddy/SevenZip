@@ -80,4 +80,14 @@ enum FileIcons {
         image.isTemplate = true
         return image
     }
+
+    /// 按扩展名取图标（文件关联列表等处用；不需要 FileListRow）。
+    static func image(forExtension ext: String) -> NSImage {
+        let lower = ext.lowercased()
+        if lower == "folder" { return folderIcon() }
+        if let type = UTType(filenameExtension: lower), type != .data {
+            return systemIcon(type)
+        }
+        return symbol("doc")
+    }
 }

@@ -57,7 +57,6 @@ struct PaneView: View {
     @State private var showInfo = false
     @State private var showLog = false
     @State private var showAbout = false
-    @State private var showAssociation = false
     @State private var manualPasswordPrompt = false
     @State private var sortDescriptors: [NSSortDescriptor] = []
 
@@ -290,7 +289,6 @@ struct PaneView: View {
         .sheet(isPresented: $showExtractionSheet) { extractionSheet }
         .sheet(isPresented: $showInfo) { infoSheet }
         .sheet(isPresented: $showAbout) { aboutSheet }
-        .sheet(isPresented: $showAssociation) { AssociationSheet() }
         .sheet(isPresented: $manualPasswordPrompt) { passwordSheet }
         .sheet(isPresented: Binding(get: { model.passwordNeededFor != nil },
                                     set: { if !$0 { model.dismissPasswordRequest() } })) {
@@ -338,6 +336,8 @@ struct PaneView: View {
             MainWindowController.shared.markAsPermanent()
             syncToolState()
         }
+        // 切换目录 → 标题栏跟着换成当前文件夹名。
+        .onChange(of: currentDir) { _ in syncToolState() }
         .onChange(of: model.nestedArchiveURL) { nested in
             // 嵌套归档已解压到临时目录：压栈并切换进去（model.open 会重置 nestedArchiveURL）。
             guard let nested, let outer = model.archiveURL, inArchive else { return }
@@ -401,8 +401,17 @@ struct PaneView: View {
         actions.paneToolState = state
         actions.conflictPolicy = conflict
         MainWindowController.shared.refreshToolbar()
-        // 窗口标题跟随当前归档（macOS 文档窗口惯例：标题显示文件名）。
-        MainWindowController.shared.setWindowTitle(model.archiveURL?.lastPathComponent ?? "七压")
+        // 窗口标题跟随当前内容（macOS 文档窗口惯例：标题显示文件名/文件夹名）。
+        // 标题栏左侧显示 app 名对文件管理器没有意义——那是 Dock 和「关于」窗口
+        // 该管的事。
+        MainWindowController.shared.setWindowTitle(windowTitle)
+    }
+
+    /// 标题栏文本：归档里显示归档名，本地目录显示当前文件夹名。
+    private var windowTitle: String {
+        if inArchive, let url = model.archiveURL { return url.lastPathComponent }
+        let name = currentDir.lastPathComponent
+        return name.isEmpty ? currentDir.path : name
     }
 
 
@@ -725,78 +734,6 @@ struct PaneView: View {
 
     /// 文件类型关联面板：自包含，onAppear 时自行加载状态，
     /// 不依赖外部 @State 的赋值时序。
-    private struct AssociationSheet: View {
-        @EnvironmentObject private var model: ArchiveModel
-        @State private var entries: [FileAssociation.Entry] = []
-
-        var body: some View {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("文件类型关联").font(.title3)
-                Text("勾选后双击该类型文件直接进入七压；取消勾选恢复系统默认打开方式。系统会为每次更改弹确认框。")
-                    .font(.caption).foregroundStyle(.secondary)
-                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
-                    ForEach(entries) { entry in
-                        GridRow {
-                            Toggle(isOn: binding(for: entry)) {
-                                Text("." + entry.ext).monospaced()
-                            }
-                            .toggleStyle(.checkbox)
-                            Text(entry.isOurs ? "已关联" : "未关联")
-                                .foregroundStyle(entry.isOurs ? Color.green : Color.secondary)
-                        }
-                    }
-                }
-                HStack {
-                    Button("全部选中") { applyAll(associate: true) }
-                    Button("全部移除") { applyAll(associate: false) }
-                    Spacer()
-                    Button("关闭") { dismiss() }.keyboardShortcut(.defaultAction)
-                }
-            }
-            .padding(24)
-            .frame(minWidth: 340)
-            .onAppear { entries = FileAssociation.status() }
-        }
-
-        @Environment(\.dismiss) private var dismiss
-
-        private func binding(for entry: FileAssociation.Entry) -> SwiftUI.Binding<Bool> {
-            SwiftUI.Binding(
-                get: { entry.isOurs },
-                set: { on in
-                    if on {
-                        FileAssociation.bind(ext: entry.ext) { ok in
-                            if !ok { model.warn("关联 .\(entry.ext) 失败：系统拒绝了更改。") }
-                            entries = FileAssociation.status()
-                        }
-                    } else {
-                        FileAssociation.remove(ext: entry.ext) { ok in
-                            if !ok { model.warn("移除 .\(entry.ext) 关联失败。") }
-                            entries = FileAssociation.status()
-                        }
-                    }
-                }
-            )
-        }
-
-        private func applyAll(associate: Bool) {
-            let pending = FileAssociation.supported.map(\.ext).filter { ext in
-                (entries.first { $0.ext == ext }?.isOurs ?? false) != associate
-            }
-            applySequentially(pending, associate: associate)
-        }
-
-        /// 每次更改都会弹系统确认框，串行执行避免弹窗堆叠。
-        private func applySequentially(_ exts: [String], associate: Bool) {
-            guard let ext = exts.first else {
-                entries = FileAssociation.status()
-                return
-            }
-            let operation = associate ? FileAssociation.bind : FileAssociation.remove
-            operation(ext) { _ in applySequentially(Array(exts.dropFirst()), associate: associate) }
-        }
-    }
-
     private var aboutSheet: some View {        VStack(spacing: 12) {
             Image(systemName: "archivebox.fill").font(.system(size: 44)).foregroundStyle(Color.accentColor)
             Text("七压 SevenZip").font(.title2)
@@ -1322,7 +1259,6 @@ struct PaneView: View {
         actions.moveToOtherPane = { transferToOtherPane(move: true) }
         actions.toggleLog = { showLog.toggle() }
         actions.enterPassword = { manualPasswordPrompt = true }
-        actions.fileAssociation = { showAssociation = true }
         actions.about = { showAbout = true }
 
         // 原生工具栏（标题栏内）动作：与菜单同一套处理器。
